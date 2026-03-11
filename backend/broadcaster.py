@@ -106,12 +106,16 @@ class Broadcaster:
 
         await self._broadcast(msg)
 
-    async def broadcast_status(self, connected: bool, logging: bool, device_id: str = ''):
+    async def broadcast_status(self, connected: bool, logging: bool,
+                               device_id: str = '', sensor_ip: str = '',
+                               log_format: str = 'tsv'):
         msg = json.dumps({
-            'type':      'status',
-            'connected': connected,
-            'logging':   logging,
-            'device_id': device_id,
+            'type':       'status',
+            'connected':  connected,
+            'logging':    logging,
+            'device_id':  device_id,
+            'sensor_ip':  sensor_ip,
+            'log_format': log_format,
         })
         await self._broadcast(msg)
 

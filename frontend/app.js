@@ -42,6 +42,7 @@ const lblRate   = document.getElementById('lbl-rate');
 const lblLog    = document.getElementById('lbl-log');
 const lblWs     = document.getElementById('lbl-ws');
 const btnLog    = document.getElementById('btn-log');
+const selFmt    = document.getElementById('sel-log-format');
 const btnClear  = document.getElementById('btn-clear');
 const selWindow = document.getElementById('sel-window');
 const chkEnv    = document.getElementById('chk-envelope');
@@ -56,6 +57,10 @@ const selectedInfo = document.getElementById('selected-info');
 // ── device discovery state ───────────────────────────────────────────────────
 let selectedSensor = null;   // { ip, mac }
 let _refreshTimer  = null;
+
+const hostInfo   = document.getElementById('host-info');
+const btnTheme   = document.getElementById('btn-theme');
+const themeIcon  = document.getElementById('theme-icon');
 
 // ── uPlot setup ───────────────────────────────────────────────────────────────
 function makeOpts(w, h) {
@@ -217,11 +222,17 @@ function handleFrame(msg) {
 
 function handleStatus(msg) {
   dotSensor.className = 'dot ' + (msg.connected ? 'green' : 'red');
-  if (msg.device_id) lblDevice.textContent = msg.device_id;
+  if (msg.device_id) {
+    const ip = msg.sensor_ip ? ` (${msg.sensor_ip})` : '';
+    lblDevice.textContent = msg.device_id + ip;
+  }
   dotLog.className    = 'dot ' + (msg.logging ? 'orange' : '');
   lblLog.textContent  = msg.logging ? 'Logging' : 'Not logging';
   btnLog.textContent  = msg.logging ? 'Stop Logging' : 'Start Logging';
   btnLog.classList.toggle('active', msg.logging);
+  loggingActive = msg.logging;
+  selFmt.disabled = msg.logging;
+  if (msg.log_format) selFmt.value = msg.log_format;
 }
 
 // ── logging button ────────────────────────────────────────────────────────────
@@ -230,6 +241,23 @@ btnLog.addEventListener('click', async () => {
   const url = loggingActive ? '/api/logging/stop' : '/api/logging/start';
   const r = await fetch(url, { method: 'POST' });
   if (r.ok) loggingActive = !loggingActive;
+  selFmt.disabled = loggingActive;
+});
+
+// ── log format selector ──────────────────────────────────────────────────────
+selFmt.addEventListener('change', async () => {
+  const r = await fetch('/api/logging/format', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ format: selFmt.value }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    alert(err.detail || 'Failed to change format');
+    // revert dropdown
+    const cur = await (await fetch('/api/logging/format')).json();
+    selFmt.value = cur.format;
+  }
 });
 
 // ── clear button ──────────────────────────────────────────────────────────────
@@ -306,19 +334,28 @@ document.getElementById('btn-get-net').addEventListener('click', async () => {
   const d = await apiPost('/api/network/config', sensorBody());
   outInfo.textContent = JSON.stringify(d, null, 2);
   if (!d.detail) {
-    document.getElementById('net-ip').value   = d.ip      || '';
-    document.getElementById('net-mask').value = d.netmask || '';
-    document.getElementById('net-gw').value   = d.gateway || '';
-    document.getElementById('net-dhcp').value = d.dhcp    || 'FEATURE_DISABLED';
+    document.getElementById('net-ip').value          = d.ip           || '';
+    document.getElementById('net-mask').value         = d.netmask      || '';
+    document.getElementById('net-gw').value           = d.gateway      || '';
+    document.getElementById('net-server-ip').value    = d.server_ip    || '';
+    document.getElementById('net-server-port').value  = d.server_port  ?? '';
+    document.getElementById('net-ntp-ip').value       = d.ntp_server_ip || '';
+    document.getElementById('net-dhcp').value         = d.dhcp         || 'FEATURE_DISABLED';
+    document.getElementById('net-stream').value       = d.data_stream  || 'FEATURE_DISABLED';
   }
 });
 
 document.getElementById('btn-set-net').addEventListener('click', async () => {
+  const port = document.getElementById('net-server-port').value;
   const d = await apiPost('/api/network/config/set', sensorBody({
-    ip:      document.getElementById('net-ip').value   || null,
-    netmask: document.getElementById('net-mask').value || null,
-    gateway: document.getElementById('net-gw').value   || null,
-    dhcp:    document.getElementById('net-dhcp').value || null,
+    ip:          document.getElementById('net-ip').value          || null,
+    netmask:     document.getElementById('net-mask').value        || null,
+    gateway:     document.getElementById('net-gw').value          || null,
+    server_ip:   document.getElementById('net-server-ip').value   || null,
+    server_port: port ? Number(port) : null,
+    ntp_server_ip: document.getElementById('net-ntp-ip').value    || null,
+    dhcp:        document.getElementById('net-dhcp').value        || null,
+    data_stream: document.getElementById('net-stream').value      || null,
   }));
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
@@ -416,7 +453,38 @@ document.getElementById('btn-refresh-devices').addEventListener('click', (e) => 
 // Auto-refresh every 10s
 _refreshTimer = setInterval(refreshDevices, 10000);
 
+// ── theme toggle ─────────────────────────────────────────────────────────────
+function applyTheme(isLight) {
+  document.body.classList.toggle('light', isLight);
+  themeIcon.innerHTML = isLight ? '&#9790;' : '&#9788;';  // moon / sun
+  localStorage.setItem('theme', isLight ? 'light' : 'dark');
+  initPlot();
+}
+btnTheme.addEventListener('click', () => {
+  applyTheme(!document.body.classList.contains('light'));
+});
+// Restore saved theme
+if (localStorage.getItem('theme') === 'light') {
+  applyTheme(true);
+}
+
+// ── host info in topbar ──────────────────────────────────────────────────────
+async function updateHostInfo() {
+  try {
+    const host = await (await fetch('/api/host')).json();
+    hostInfo.textContent = `This host (Server): ${host.ip}:${host.tcp_port}`;
+  } catch {
+    hostInfo.textContent = 'This host (Server): unavailable';
+  }
+}
+
 // ── init ──────────────────────────────────────────────────────────────────────
 initPlot();
 connect();
 refreshDevices();
+updateHostInfo();
+
+// Fetch initial log format
+fetch('/api/logging/format').then(r => r.json()).then(d => {
+  selFmt.value = d.format;
+}).catch(() => {});

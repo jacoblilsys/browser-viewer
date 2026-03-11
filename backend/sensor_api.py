@@ -239,6 +239,8 @@ async def set_network_config(target_ip: str, mac: str, password: str, **kwargs):
             nc.server_ip = _pack_ip(v)
         elif k == 'server_port':
             nc.server_port = int(v)
+        elif k == 'ntp_server_ip':
+            nc.ntp_server_ip = _pack_ip(v)
         elif k == 'dhcp':
             nc.dhcp = _pb.FeatureToggle.Value(v)
         elif k == 'data_stream':

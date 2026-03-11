@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from network_receiver import NetworkReceiver
 from protobuf_decoder import decode_frame
 from broadcaster import Broadcaster
-from log_writer import LogWriter
+from log_writer import LogManager
 from mdns_scanner import MDNSScanner
 
 # ── configuration ─────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ def _get_local_ip() -> str:
 _queue:    asyncio.Queue = asyncio.Queue(maxsize=4096)
 _receiver: Optional[NetworkReceiver] = None
 _broadcaster  = Broadcaster()
-_log_writer   = LogWriter(output_dir=_LOG_DIR)
+_log_writer   = LogManager(output_dir=_LOG_DIR)
 _mdns         = MDNSScanner()
 _logging_on   = False
 
@@ -121,10 +121,13 @@ async def _drain_queue():
         await _broadcaster.push(frame)
 
         connected = _receiver.connected_clients > 0 if _receiver else False
+        sensor_ip = _receiver.remote_ip or '' if _receiver else ''
         await _broadcaster.broadcast_status(
             connected=connected,
             logging=_logging_on,
             device_id=frame.device_id,
+            sensor_ip=sensor_ip,
+            log_format=_log_writer.fmt,
         )
 
 
@@ -136,10 +139,13 @@ async def _status_heartbeat():
     while True:
         await asyncio.sleep(1.0)
         connected = _receiver.connected_clients > 0 if _receiver else False
+        sensor_ip = _receiver.remote_ip or '' if _receiver else ''
         await _broadcaster.broadcast_status(
             connected=connected,
             logging=_logging_on,
             device_id=_last_device_id,
+            sensor_ip=sensor_ip,
+            log_format=_log_writer.fmt,
         )
 
 
@@ -188,6 +194,23 @@ async def logging_stop():
     return {'logging': False}
 
 
+class LogFormatPayload(BaseModel):
+    format: str
+
+
+@app.get('/api/logging/format')
+async def logging_format_get():
+    return {'format': _log_writer.fmt}
+
+
+@app.post('/api/logging/format')
+async def logging_format_set(body: LogFormatPayload):
+    if _logging_on:
+        raise HTTPException(status_code=409, detail='Cannot change format while logging')
+    _log_writer.set_format(body.format)
+    return {'format': _log_writer.fmt}
+
+
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 
 @app.websocket('/ws')
@@ -219,13 +242,14 @@ class SensorConfigPayload(SensorTarget):
 
 
 class NetworkConfigPayload(SensorTarget):
-    ip:          Optional[str] = None
-    netmask:     Optional[str] = None
-    gateway:     Optional[str] = None
-    server_ip:   Optional[str] = None
-    server_port: Optional[int] = None
-    dhcp:        Optional[str] = None
-    data_stream: Optional[str] = None
+    ip:            Optional[str] = None
+    netmask:       Optional[str] = None
+    gateway:       Optional[str] = None
+    server_ip:     Optional[str] = None
+    server_port:   Optional[int] = None
+    ntp_server_ip: Optional[str] = None
+    dhcp:          Optional[str] = None
+    data_stream:   Optional[str] = None
 
 
 def _sensor_api():

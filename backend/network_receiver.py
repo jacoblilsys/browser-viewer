@@ -41,6 +41,7 @@ class NetworkReceiver:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.connected_clients: int = 0
+        self.remote_ip: Optional[str] = None
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True, name='tcp-receiver')
@@ -72,6 +73,7 @@ class NetworkReceiver:
                         sel.register(conn, selectors.EVENT_READ, data=state)
                         states[conn] = state
                         self.connected_clients += 1
+                        self.remote_ip = addr[0]
                         _log.info('Sensor connected from %s:%d', addr[0], addr[1])
                     else:
                         self._read(key.fileobj, key.data, sel, states)

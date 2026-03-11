@@ -12,18 +12,12 @@
 <body>
 
 <header class="topbar">
-  <span class="app-title">Sensor Viewer</span>
-  <div class="status-row">
-    <span class="dot" id="dot-sensor" title="Sensor TCP"></span>
-    <span id="lbl-device">No device</span>
-    <span class="sep">|</span>
-    <span id="lbl-rate">— Hz</span>
-    <span class="sep">|</span>
-    <span class="dot" id="dot-log" title="Logging"></span>
-    <span id="lbl-log">Not logging</span>
-    <span class="sep">|</span>
-    <span class="dot" id="dot-ws" title="WebSocket"></span>
-    <span id="lbl-ws">Connecting…</span>
+  <span class="app-title">Lillie System</span>
+  <span class="host-info" id="host-info">This host (Server): —</span>
+  <div class="topbar-right">
+    <button class="theme-btn" id="btn-theme" title="Toggle light/dark theme">
+      <span id="theme-icon">&#9788;</span>
+    </button>
   </div>
 </header>
 
@@ -32,20 +26,38 @@
   <!-- ── Chart panel ── -->
   <section class="chart-panel">
     <div class="chart-toolbar">
-      <label>Window
-        <select id="sel-window">
-          <option value="2">2 s</option>
-          <option value="5" selected>5 s</option>
-          <option value="10">10 s</option>
-          <option value="30">30 s</option>
+      <div class="chart-sensor-info">
+        <span class="dot" id="dot-sensor" title="Sensor TCP"></span>
+        <span id="lbl-device">No device</span>
+        <span class="sep">|</span>
+        <span id="lbl-rate">— Hz</span>
+        <span class="sep">|</span>
+        <span class="dot" id="dot-log" title="Logging"></span>
+        <span id="lbl-log">Not logging</span>
+        <span class="sep">|</span>
+        <span class="dot" id="dot-ws" title="WebSocket"></span>
+        <span id="lbl-ws">Connecting…</span>
+      </div>
+      <div class="chart-controls">
+        <label>Window
+          <select id="sel-window">
+            <option value="2">2 s</option>
+            <option value="5" selected>5 s</option>
+            <option value="10">10 s</option>
+            <option value="30">30 s</option>
+          </select>
+        </label>
+        <label>
+          <input type="checkbox" id="chk-envelope" checked />
+          Min/max envelope
+        </label>
+        <select id="sel-log-format" class="log-format-select" title="Log file format">
+          <option value="tsv">TSV</option>
+          <option value="hdf5">HDF5</option>
         </select>
-      </label>
-      <label>
-        <input type="checkbox" id="chk-envelope" checked />
-        Min/max envelope
-      </label>
-      <button id="btn-log" class="btn">Start Logging</button>
-      <button id="btn-clear" class="btn">Clear</button>
+        <button id="btn-log" class="btn">Start Logging</button>
+        <button id="btn-clear" class="btn">Clear</button>
+      </div>
     </div>
     <div id="chart"></div>
     <div class="legend">
@@ -78,7 +90,6 @@
           <button class="btn" id="btn-stream-stop">Stream ■</button>
           <button class="btn btn-danger" id="btn-reset">Reset</button>
         </div>
-        <pre id="out-info" class="output-box"></pre>
       </div>
     </details>
 
@@ -142,11 +153,20 @@
     <details>
       <summary>Network Config</summary>
       <div class="card">
-        <label>IP       <input type="text" id="net-ip"  /></label>
-        <label>Netmask  <input type="text" id="net-mask"/></label>
-        <label>Gateway  <input type="text" id="net-gw"  /></label>
+        <label>IP           <input type="text" id="net-ip"  /></label>
+        <label>Netmask      <input type="text" id="net-mask"/></label>
+        <label>Gateway      <input type="text" id="net-gw"  /></label>
+        <label>Server IP    <input type="text" id="net-server-ip" /></label>
+        <label>Server Port  <input type="text" id="net-server-port" /></label>
+        <label>NTP Server   <input type="text" id="net-ntp-ip" /></label>
         <label>DHCP
           <select id="net-dhcp">
+            <option>FEATURE_DISABLED</option>
+            <option>FEATURE_ENABLED</option>
+          </select>
+        </label>
+        <label>Data Stream
+          <select id="net-stream">
             <option>FEATURE_DISABLED</option>
             <option>FEATURE_ENABLED</option>
           </select>
@@ -160,6 +180,11 @@
 
   </aside>
 </main>
+
+<!-- ── Console output at bottom ── -->
+<footer class="console-footer">
+  <pre id="out-info" class="output-box"></pre>
+</footer>
 
 <script src="/static/app.js"></script>
 </body>
