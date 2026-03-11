@@ -213,7 +213,7 @@ async def get_network_config(target_ip: str, mac: str, password: str) -> dict:
         'netmask':      _ip(nc.netmask),
         'gateway':      _ip(nc.gateway),
         'server_ip':    _ip(nc.server_ip),
-        'server_port':  _ip(nc.server_port),
+        'server_port':  nc.server_port,
         'ntp_server_ip': _ip(nc.ntp_server_ip),
         'dhcp':         _pb.FeatureToggle.Name(nc.dhcp),
         'data_stream':  _pb.FeatureToggle.Name(nc.data_stream),
@@ -221,10 +221,9 @@ async def get_network_config(target_ip: str, mac: str, password: str) -> dict:
 
 
 async def set_network_config(target_ip: str, mac: str, password: str, **kwargs):
-    get_req = _pb.Request(msg_version=1)
-    get_req.get_network_config.SetInParent()
-    get_resp = _check(await _send_recv(target_ip, get_req.SerializeToString(), mac, password))
-    nc = get_resp.ipv4_config
+    # Build a fresh config with only the requested fields set.
+    # The sensor firmware applies non-default fields only.
+    nc = _pb.NetworkConfigV4()
 
     def _pack_ip(s: str) -> int:
         return struct.unpack('>I', socket.inet_aton(s))[0]
@@ -236,6 +235,10 @@ async def set_network_config(target_ip: str, mac: str, password: str, **kwargs):
             nc.netmask = _pack_ip(v)
         elif k == 'gateway':
             nc.gateway = _pack_ip(v)
+        elif k == 'server_ip':
+            nc.server_ip = _pack_ip(v)
+        elif k == 'server_port':
+            nc.server_port = int(v)
         elif k == 'dhcp':
             nc.dhcp = _pb.FeatureToggle.Value(v)
         elif k == 'data_stream':

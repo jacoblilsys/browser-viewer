@@ -31,6 +31,7 @@ from network_receiver import NetworkReceiver
 from protobuf_decoder import decode_frame
 from broadcaster import Broadcaster
 from log_writer import LogWriter
+from mdns_scanner import MDNSScanner
 
 # ── configuration ─────────────────────────────────────────────────────────────
 
@@ -39,12 +40,26 @@ _TCP_PORT   = 8066
 _LOG_DIR    = os.environ.get('LOG_DIR', './logs')
 _FRONTEND   = Path(__file__).parent.parent / 'frontend'
 
+
+def _get_local_ip() -> str:
+    """Get the machine's LAN IP by connecting to a dummy address."""
+    import socket as _sock
+    try:
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+        s.connect(('192.168.0.1', 1))   # doesn't actually send anything
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
+
 # ── global state ─────────────────────────────────────────────────────────────
 
 _queue:    asyncio.Queue = asyncio.Queue(maxsize=4096)
 _receiver: Optional[NetworkReceiver] = None
 _broadcaster  = Broadcaster()
 _log_writer   = LogWriter(output_dir=_LOG_DIR)
+_mdns         = MDNSScanner()
 _logging_on   = False
 
 
@@ -58,6 +73,7 @@ async def lifespan(app: FastAPI):
     _receiver = NetworkReceiver(_TCP_HOST, _TCP_PORT, _queue, loop)
     _receiver.start()
     _broadcaster.start()
+    _mdns.start()
 
     asyncio.create_task(_drain_queue())
     asyncio.create_task(_status_heartbeat())
@@ -65,6 +81,7 @@ async def lifespan(app: FastAPI):
     yield
 
     _receiver.stop()
+    _mdns.stop()
     _log_writer.close_all()
 
 
@@ -136,6 +153,16 @@ async def index():
     return JSONResponse({'message': 'Browser Viewer backend running. Frontend not found.'})
 
 
+@app.get('/api/devices')
+async def api_devices():
+    return _mdns.get_devices()
+
+
+@app.get('/api/host')
+async def api_host():
+    return {'ip': _get_local_ip(), 'tcp_port': _TCP_PORT}
+
+
 @app.get('/api/status')
 async def api_status():
     connected = _receiver.connected_clients > 0 if _receiver else False
@@ -195,6 +222,8 @@ class NetworkConfigPayload(SensorTarget):
     ip:          Optional[str] = None
     netmask:     Optional[str] = None
     gateway:     Optional[str] = None
+    server_ip:   Optional[str] = None
+    server_port: Optional[int] = None
     dhcp:        Optional[str] = None
     data_stream: Optional[str] = None
 

@@ -200,6 +200,78 @@ summary:hover { color: var(--accent); }
   color: #9ecc9e;
 }
 
+/* ── device list ──────────────────────────────────────────────────────────── */
+.device-list {
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.device-empty {
+  color: var(--muted);
+  font-size: .8rem;
+  padding: .3rem 0;
+}
+
+.device-item {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .3rem .4rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: .78rem;
+  background: var(--bg);
+  border: 1px solid transparent;
+  transition: background .1s, border-color .1s;
+}
+.device-item:hover { background: #1a2a4a; }
+.device-item.selected { border-color: var(--accent); background: #2a1a3a; }
+
+.device-item .device-mac {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-item .device-ip {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.device-item .device-mode {
+  font-size: .7rem;
+  font-weight: 600;
+  padding: 0 .3rem;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.device-mode.app  { color: #4caf50; }
+.device-mode.boot { color: #ffb300; }
+
+.btn-sm {
+  font-size: .7rem;
+  padding: .1rem .35rem;
+  margin-left: .4rem;
+  vertical-align: middle;
+}
+
+.btn-setup {
+  font-size: .7rem;
+  padding: .15rem .35rem;
+  white-space: nowrap;
+}
+
+.selected-info {
+  font-size: .82rem;
+  color: var(--muted);
+  padding: .2rem 0;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
 /* ── scrollbar ───────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar       { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }

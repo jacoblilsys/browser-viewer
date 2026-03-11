@@ -49,9 +49,13 @@ const chartDiv  = document.getElementById('chart');
 const outInfo   = document.getElementById('out-info');
 
 // Phase-2 control elements
-const inIp   = document.getElementById('in-ip');
-const inMac  = document.getElementById('in-mac');
-const inPw   = document.getElementById('in-pw');
+const inPw         = document.getElementById('in-pw');
+const deviceListEl = document.getElementById('device-list');
+const selectedInfo = document.getElementById('selected-info');
+
+// ── device discovery state ───────────────────────────────────────────────────
+let selectedSensor = null;   // { ip, mac }
+let _refreshTimer  = null;
 
 // ── uPlot setup ───────────────────────────────────────────────────────────────
 function makeOpts(w, h) {
@@ -247,9 +251,13 @@ chkEnv.addEventListener('change', () => {
 
 // ── Phase 2: sensor control ───────────────────────────────────────────────────
 function sensorBody(extra = {}) {
+  if (!selectedSensor) {
+    alert('Select a sensor from the device list first');
+    throw new Error('no sensor selected');
+  }
   return {
-    target_ip: inIp.value.trim(),
-    mac:       inMac.value.trim(),
+    target_ip: selectedSensor.ip,
+    mac:       selectedSensor.mac,
     password:  inPw.value,
     ...extra,
   };
@@ -331,6 +339,84 @@ document.getElementById('btn-reset').addEventListener('click', async () => {
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
 
+// ── device discovery ─────────────────────────────────────────────────────────
+async function refreshDevices() {
+  try {
+    const r = await fetch('/api/devices');
+    const devices = await r.json();
+    renderDeviceList(devices);
+  } catch (e) {
+    deviceListEl.innerHTML = '<div class="device-empty">Fetch failed</div>';
+  }
+}
+
+function renderDeviceList(devices) {
+  if (!devices.length) {
+    deviceListEl.innerHTML = '<div class="device-empty">No sensors found</div>';
+    return;
+  }
+  deviceListEl.innerHTML = '';
+  for (const d of devices) {
+    const el = document.createElement('div');
+    el.className = 'device-item';
+    if (selectedSensor && selectedSensor.mac === d.mac) el.classList.add('selected');
+
+    const modeClass = (d.mode || '').toLowerCase();
+    el.innerHTML = `
+      <span class="dot ${modeClass === 'app' ? 'green' : modeClass === 'boot' ? 'orange' : ''}"></span>
+      <span class="device-mac">${d.mac}</span>
+      <span class="device-ip">${d.ip}</span>
+      <button class="btn btn-setup" data-ip="${d.ip}" data-mac="${d.mac}" title="Set server address to this machine">Setup</button>
+    `;
+
+    // Click row to select
+    el.addEventListener('click', (e) => {
+      if (e.target.classList.contains('btn-setup')) return; // handled separately
+      selectSensor(d);
+    });
+
+    // Setup button — point sensor at this server
+    el.querySelector('.btn-setup').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      selectSensor(d);
+      try {
+        const host = await (await fetch('/api/host')).json();
+        const body = sensorBody({
+          server_ip:   host.ip,
+          server_port: host.tcp_port,
+          data_stream: 'FEATURE_ENABLED',
+        });
+        const res = await apiPost('/api/network/config/set', body);
+        outInfo.textContent = 'Setup sent: ' + JSON.stringify(res, null, 2);
+      } catch (err) {
+        if (err.message !== 'no sensor selected')
+          outInfo.textContent = 'Setup error: ' + err.message;
+      }
+    });
+
+    deviceListEl.appendChild(el);
+  }
+}
+
+function selectSensor(d) {
+  selectedSensor = { ip: d.ip, mac: d.mac };
+  selectedInfo.textContent = `${d.mac}  (${d.ip})`;
+  // Highlight selected row
+  deviceListEl.querySelectorAll('.device-item').forEach(el => {
+    el.classList.toggle('selected', el.querySelector('.device-mac')?.textContent === d.mac);
+  });
+}
+
+document.getElementById('btn-refresh-devices').addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  refreshDevices();
+});
+
+// Auto-refresh every 10s
+_refreshTimer = setInterval(refreshDevices, 10000);
+
 // ── init ──────────────────────────────────────────────────────────────────────
 initPlot();
 connect();
+refreshDevices();

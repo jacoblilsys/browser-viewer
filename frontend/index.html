@@ -59,10 +59,18 @@
   <aside class="sidebar">
 
     <details open>
-      <summary>Sensor Control</summary>
+      <summary>Devices on Network <button class="btn btn-sm" id="btn-refresh-devices" title="Refresh">&#x21bb;</button></summary>
       <div class="card">
-        <label>IP <input type="text" id="in-ip"  placeholder="192.168.1.100" /></label>
-        <label>MAC<input type="text" id="in-mac" placeholder="aa:bb:cc:dd:ee:ff" /></label>
+        <div id="device-list" class="device-list">
+          <div class="device-empty">Scanning...</div>
+        </div>
+      </div>
+    </details>
+
+    <details id="panel-sensor" open>
+      <summary>Selected Sensor</summary>
+      <div class="card">
+        <div class="selected-info" id="selected-info">No sensor selected</div>
         <label>Password<input type="password" id="in-pw" placeholder="(empty)" /></label>
         <div class="btn-row">
           <button class="btn" id="btn-get-info">Get Info</button>

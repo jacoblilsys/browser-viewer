@@ -3,3 +3,4 @@ uvicorn[standard]>=0.29
 websockets>=12
 protobuf>=4.25,<5
 numpy>=1.24
+zeroconf>=0.131
