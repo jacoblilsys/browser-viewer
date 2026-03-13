@@ -1,8 +1,8 @@
 """
-WebSocket broadcaster + 60 Hz downsampler.
+WebSocket broadcaster + configurable-rate downsampler.
 
-Accumulates FrameData samples in per-axis ring buffers.  On a 60 Hz asyncio
-timer, computes min/max/last for the accumulated chunk and broadcasts a JSON
+Accumulates FrameData samples in per-axis ring buffers.  On a timer (default
+60 Hz), computes min/max/last for the accumulated chunk and broadcasts a JSON
 envelope to every connected client.
 """
 
@@ -15,18 +15,16 @@ from typing import Dict, Optional, Set
 from fastapi import WebSocket
 from protobuf_decoder import FrameData
 
-_TARGET_FPS = 60
-_INTERVAL   = 1.0 / _TARGET_FPS
-
-
 class Broadcaster:
-    def __init__(self):
+    def __init__(self, fps: int = 60):
         self._clients: Set[WebSocket] = set()
         # ring buffers keyed by axis label ('accel_x', 'accel_y', 'accel_z')
         self._buffers: Dict[str, deque] = {}
         self._last_frame: Optional[FrameData] = None
         self._stream_key: tuple = ()   # (device_id, stream_uid)
         self._units: Dict[str, str] = {}
+        self._fps = fps
+        self._interval = 1.0 / fps
         self._lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
 
@@ -65,7 +63,7 @@ class Broadcaster:
             t0 = time.monotonic()
             await self._emit()
             elapsed = time.monotonic() - t0
-            await asyncio.sleep(max(0.0, _INTERVAL - elapsed))
+            await asyncio.sleep(max(0.0, self._interval - elapsed))
 
     async def _emit(self):
         if not self._clients:

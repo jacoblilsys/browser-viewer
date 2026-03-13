@@ -36,8 +36,9 @@ from mdns_scanner import MDNSScanner
 # ── configuration ─────────────────────────────────────────────────────────────
 
 _TCP_HOST   = '0.0.0.0'
-_TCP_PORT   = 8066
+_TCP_PORT   = int(os.environ.get('TCP_PORT', '8066'))
 _LOG_DIR    = os.environ.get('LOG_DIR', './logs')
+_WS_FPS     = int(os.environ.get('WS_FPS', '60'))
 _FRONTEND   = Path(__file__).parent.parent / 'frontend'
 
 
@@ -57,7 +58,7 @@ def _get_local_ip() -> str:
 
 _queue:    asyncio.Queue = asyncio.Queue(maxsize=4096)
 _receiver: Optional[NetworkReceiver] = None
-_broadcaster  = Broadcaster()
+_broadcaster  = Broadcaster(fps=_WS_FPS)
 _log_writer   = LogManager(output_dir=_LOG_DIR)
 _mdns         = MDNSScanner()
 _logging_on   = False
