@@ -175,10 +175,53 @@ body.light .theme-btn {
   cursor: not-allowed;
 }
 
-/* ── chart ──────────────────────────────────────────────────────────────────── */
-#chart {
+/* ── charts area — multi-chart grid ──────────────────────────────────────── */
+.charts-area {
+  display: grid;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Layout presets */
+.layout-raw-only           { grid-template: 1fr / 1fr; }
+.layout-1\+3-vert          { grid-template-rows: 1fr 1fr 1fr 1fr; grid-template-columns: 1fr; }
+.layout-2x2                { grid-template: 1fr 1fr / 1fr 1fr; }
+.layout-side-by-side        { grid-template: 1fr / 1fr 1fr; }
+.layout-raw\+1fft          { grid-template-rows: 1fr 1fr; grid-template-columns: 1fr; }
+
+/* Chart container */
+.chart-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.chart-label {
+  font-size: .78rem;
+  font-weight: 600;
+  padding: .2rem .5rem;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.chart-canvas {
   flex: 1;
   min-height: 0;
+}
+
+/* side-by-side: right column stacks 3 FFT charts */
+.layout-side-by-side .chart-fft {
+  /* When in side-by-side, the 3 FFTs share the right grid cell.
+     We use a sub-grid wrapper in JS for this — but as a CSS fallback,
+     the grid auto-placement handles it if they are individual items. */
 }
 
 .uplot { width: 100% !important; height: 100% !important; }
@@ -186,8 +229,9 @@ body.light .theme-btn {
 .legend {
   display: flex;
   gap: 1.2rem;
-  padding: .3rem 0;
+  padding: .3rem .5rem;
   font-size: .9rem;
+  flex-shrink: 0;
 }
 .leg-x { color: var(--x); }
 .leg-y { color: var(--y); }
@@ -234,6 +278,27 @@ summary:hover { color: var(--accent); }
   outline: none;
   border-color: var(--accent);
 }
+
+.pw-wrap {
+  position: relative;
+  display: flex;
+  width: 100%;
+}
+.pw-wrap input { flex: 1; padding-right: 2rem; }
+.btn-toggle-pw {
+  position: absolute;
+  right: .3rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0 .15rem;
+  line-height: 1;
+}
+.btn-toggle-pw:hover { color: var(--text); }
 
 .btn-row {
   display: flex;
@@ -362,7 +427,7 @@ body.light .device-item.selected { background: #f0d8dd; border-color: var(--acce
   font-family: 'Cascadia Code', 'Fira Code', monospace;
 }
 
-/* ── scrollbar ───────────────────────────────────────────────────────────────── */
+/* ── scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar       { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }

@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from network_receiver import NetworkReceiver
-from protobuf_decoder import decode_frame
+from protobuf_decoder import decode_any, FrameData, FFTFrameData
 from broadcaster import Broadcaster
 from log_writer import LogManager
 from mdns_scanner import MDNSScanner
@@ -103,33 +103,38 @@ async def _drain_queue():
     while True:
         payload_bytes, recv_time_ns = await _queue.get()
         try:
-            frame = decode_frame(payload_bytes, recv_time_ns)
+            result = decode_any(payload_bytes, recv_time_ns)
         except Exception as e:
-            _log.warning('decode_frame failed: %s', e)
+            _log.warning('decode failed: %s', e)
             continue
 
-        if frame is None:
+        if result is None:
             continue
 
-        _last_device_id = frame.device_id
+        if isinstance(result, FrameData):
+            _last_device_id = result.device_id
 
-        if _logging_on:
-            try:
-                _log_writer.write(frame)
-            except Exception as e:
-                _log.warning('log_writer failed: %s', e)
+            if _logging_on:
+                try:
+                    _log_writer.write(result)
+                except Exception as e:
+                    _log.warning('log_writer failed: %s', e)
 
-        await _broadcaster.push(frame)
+            await _broadcaster.push(result)
 
-        connected = _receiver.connected_clients > 0 if _receiver else False
-        sensor_ip = _receiver.remote_ip or '' if _receiver else ''
-        await _broadcaster.broadcast_status(
-            connected=connected,
-            logging=_logging_on,
-            device_id=frame.device_id,
-            sensor_ip=sensor_ip,
-            log_format=_log_writer.fmt,
-        )
+            connected = _receiver.connected_clients > 0 if _receiver else False
+            sensor_ip = _receiver.remote_ip or '' if _receiver else ''
+            await _broadcaster.broadcast_status(
+                connected=connected,
+                logging=_logging_on,
+                device_id=result.device_id,
+                sensor_ip=sensor_ip,
+                log_format=_log_writer.fmt,
+            )
+
+        elif isinstance(result, FFTFrameData):
+            _last_device_id = result.device_id
+            await _broadcaster.push_fft(result)
 
 
 async def _status_heartbeat():
@@ -240,6 +245,7 @@ class SensorConfigPayload(SensorTarget):
     odr_div:        Optional[str] = None
     filter_enabled: Optional[str] = None
     filter_cutoff:  Optional[str] = None
+    fft_size:       Optional[str] = None
 
 
 class NetworkConfigPayload(SensorTarget):
@@ -251,6 +257,7 @@ class NetworkConfigPayload(SensorTarget):
     ntp_server_ip: Optional[str] = None
     dhcp:          Optional[str] = None
     data_stream:   Optional[str] = None
+    fft_stream:    Optional[str] = None
 
 
 def _sensor_api():
@@ -285,6 +292,7 @@ async def sensor_config_set(body: SensorConfigPayload):
             odr_div=body.odr_div,
             filter_enabled=body.filter_enabled,
             filter_cutoff=body.filter_cutoff,
+            fft_size=body.fft_size,
         )
         return {'ok': True}
     except Exception as e:
@@ -324,6 +332,24 @@ async def api_stream_start(body: SensorTarget):
 async def api_stream_stop(body: SensorTarget):
     try:
         await _sensor_api().stream_stop(body.target_ip, body.mac, body.password)
+        return {'ok': True}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post('/api/stream/fft/start')
+async def api_fft_start(body: SensorTarget):
+    try:
+        await _sensor_api().stream_fft_start(body.target_ip, body.mac, body.password)
+        return {'ok': True}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post('/api/stream/fft/stop')
+async def api_fft_stop(body: SensorTarget):
+    try:
+        await _sensor_api().stream_fft_stop(body.target_ip, body.mac, body.password)
         return {'ok': True}
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))

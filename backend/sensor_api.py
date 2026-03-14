@@ -78,6 +78,18 @@ class SensorApiError(Exception):
 
 # ── blocking UDP transport (runs in thread pool) ─────────────────────────────
 
+def _get_local_ip() -> str:
+    """Get the machine's LAN IP by connecting to a dummy address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('192.168.0.1', 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '0.0.0.0'
+
+
 def _send_recv_blocking(
     target_ip: str,
     payload: bytes,
@@ -87,9 +99,18 @@ def _send_recv_blocking(
     """Blocking UDP send/receive — called via run_in_executor."""
     data, req_id = _build_request(payload, mac_str, password)
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+
+    # Match Console transport: bind multicast to the correct interface and
+    # join the multicast group so we receive responses sent to 224.0.0.251.
+    local_ip = _get_local_ip()
+    local_if = socket.inet_aton(local_ip)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, local_if)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                    socket.inet_aton(_MULTICAST_ADDR) + local_if)
+
     sock.settimeout(_RESPONSE_TIMEOUT_S)
     sock.bind(('', 0))
 
@@ -164,6 +185,7 @@ async def get_sensor_config(target_ip: str, mac: str, password: str) -> dict:
             'filter_enabled': _pb.FilterEnabled.Name(sc.filter.filter_enabled),
             'filter_cutoff':  _pb.CutoffKHz.Name(sc.filter.filter_cutoff),
         },
+        'fft_size':   _pb.FftSize.Name(sc.fft_size),
     }
 
 
@@ -176,6 +198,7 @@ async def set_sensor_config(
     odr_div: Optional[str] = None,
     filter_enabled: Optional[str] = None,
     filter_cutoff: Optional[str] = None,
+    fft_size: Optional[str] = None,
 ):
     # Fetch current config first so we only overwrite supplied fields.
     get_req = _pb.Request(msg_version=1)
@@ -193,6 +216,8 @@ async def set_sensor_config(
         sc.filter.filter_enabled = _pb.FilterEnabled.Value(filter_enabled)
     if filter_cutoff is not None:
         sc.filter.filter_cutoff = _pb.CutoffKHz.Value(filter_cutoff)
+    if fft_size is not None:
+        sc.fft_size = _pb.FftSize.Value(fft_size)
 
     set_req = _pb.Request(msg_version=1)
     set_req.set_sensor_config.CopyFrom(sc)
@@ -217,6 +242,7 @@ async def get_network_config(target_ip: str, mac: str, password: str) -> dict:
         'ntp_server_ip': _ip(nc.ntp_server_ip),
         'dhcp':         _pb.FeatureToggle.Name(nc.dhcp),
         'data_stream':  _pb.FeatureToggle.Name(nc.data_stream),
+        'fft_stream':   _pb.FeatureToggle.Name(nc.fft_stream),
     }
 
 
@@ -245,6 +271,8 @@ async def set_network_config(target_ip: str, mac: str, password: str, **kwargs):
             nc.dhcp = _pb.FeatureToggle.Value(v)
         elif k == 'data_stream':
             nc.data_stream = _pb.FeatureToggle.Value(v)
+        elif k == 'fft_stream':
+            nc.fft_stream = _pb.FeatureToggle.Value(v)
 
     set_req = _pb.Request(msg_version=1)
     set_req.set_network_config.CopyFrom(nc)
@@ -260,6 +288,18 @@ async def stream_start(target_ip: str, mac: str, password: str):
 async def stream_stop(target_ip: str, mac: str, password: str):
     req = _pb.Request(msg_version=1)
     req.command.stream_data = _pb.FEATURE_DISABLED
+    _check(await _send_recv(target_ip, req.SerializeToString(), mac, password))
+
+
+async def stream_fft_start(target_ip: str, mac: str, password: str):
+    req = _pb.Request(msg_version=1)
+    req.command.stream_fft = _pb.FEATURE_ENABLED
+    _check(await _send_recv(target_ip, req.SerializeToString(), mac, password))
+
+
+async def stream_fft_stop(target_ip: str, mac: str, password: str):
+    req = _pb.Request(msg_version=1)
+    req.command.stream_fft = _pb.FEATURE_DISABLED
     _check(await _send_recv(target_ip, req.SerializeToString(), mac, password))
 
 

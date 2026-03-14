@@ -4,6 +4,9 @@ WebSocket broadcaster + configurable-rate downsampler.
 Accumulates FrameData samples in per-axis ring buffers.  On a timer (default
 60 Hz), computes min/max/last for the accumulated chunk and broadcasts a JSON
 envelope to every connected client.
+
+FFT spectra are throttled to 30 Hz — each result is a complete snapshot so
+no downsampling is needed, just rate-limiting.
 """
 
 import asyncio
@@ -13,7 +16,7 @@ from collections import deque
 from typing import Dict, Optional, Set
 
 from fastapi import WebSocket
-from protobuf_decoder import FrameData
+from protobuf_decoder import FrameData, FFTFrameData
 
 class Broadcaster:
     def __init__(self, fps: int = 60):
@@ -27,6 +30,13 @@ class Broadcaster:
         self._interval = 1.0 / fps
         self._lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
+
+        # FFT state
+        self._fft_frame: Optional[FFTFrameData] = None
+        self._fft_dirty: bool = False
+        self._fft_lock = asyncio.Lock()
+        self._fft_task: Optional[asyncio.Task] = None
+        self._fft_interval = 1.0 / 30  # 30 Hz throttle
 
     # ── client management ────────────────────────────────────────────────────
 
@@ -53,10 +63,16 @@ class Broadcaster:
                     self._buffers[label] = deque()
                 self._buffers[label].extend(arr.tolist())
 
+    async def push_fft(self, fft: FFTFrameData):
+        async with self._fft_lock:
+            self._fft_frame = fft
+            self._fft_dirty = True
+
     # ── broadcast loop ───────────────────────────────────────────────────────
 
     def start(self):
         self._task = asyncio.create_task(self._loop())
+        self._fft_task = asyncio.create_task(self._fft_loop())
 
     async def _loop(self):
         while True:
@@ -64,6 +80,13 @@ class Broadcaster:
             await self._emit()
             elapsed = time.monotonic() - t0
             await asyncio.sleep(max(0.0, self._interval - elapsed))
+
+    async def _fft_loop(self):
+        while True:
+            t0 = time.monotonic()
+            await self._emit_fft()
+            elapsed = time.monotonic() - t0
+            await asyncio.sleep(max(0.0, self._fft_interval - elapsed))
 
     async def _emit(self):
         if not self._clients:
@@ -100,6 +123,31 @@ class Broadcaster:
             'stream_uid': stream_uid,
             'axes':       axes_data,
             'units':      dict(self._units),
+        })
+
+        await self._broadcast(msg)
+
+    async def _emit_fft(self):
+        if not self._clients:
+            return
+
+        async with self._fft_lock:
+            if not self._fft_dirty:
+                return
+            fft = self._fft_frame
+            self._fft_dirty = False
+
+        if fft is None:
+            return
+
+        msg = json.dumps({
+            'type':       'fft',
+            'fft_bins':   fft.fft_bins,
+            'fft_size':   fft.fft_size,
+            'freq_hz':    fft.freq_hz,
+            'magnitudes': fft.magnitudes,
+            'unit':       fft.unit,
+            'seq':        fft.seq,
         })
 
         await self._broadcast(msg)

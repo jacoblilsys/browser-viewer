@@ -23,7 +23,7 @@
 
 <main class="layout">
 
-  <!-- ── Chart panel ── -->
+  <!-- ── Charts area ── -->
   <section class="chart-panel">
     <div class="chart-toolbar">
       <div class="chart-sensor-info">
@@ -39,6 +39,15 @@
         <span id="lbl-ws">Connecting…</span>
       </div>
       <div class="chart-controls">
+        <label>Layout
+          <select id="sel-layout">
+            <option value="raw-only">Raw Only</option>
+            <option value="1+3-vert">Raw + 3 FFT</option>
+            <option value="2x2">2x2 Grid</option>
+            <option value="side-by-side">Side by Side</option>
+            <option value="raw+1fft">Raw + Combined FFT</option>
+          </select>
+        </label>
         <label>Window
           <select id="sel-window">
             <option value="2">2 s</option>
@@ -59,12 +68,39 @@
         <button id="btn-clear" class="btn">Clear</button>
       </div>
     </div>
-    <div id="chart"></div>
-    <div class="legend">
-      <span class="leg-x">— X</span>
-      <span class="leg-y">— Y</span>
-      <span class="leg-z">— Z</span>
-    </div>
+
+    <section class="charts-area layout-raw-only" id="charts-area">
+      <div class="chart-container" id="chart-raw">
+        <div class="chart-label">Raw Waveform</div>
+        <div class="chart-canvas" id="chart-raw-canvas"></div>
+        <div class="legend">
+          <span class="leg-x">— X</span>
+          <span class="leg-y">— Y</span>
+          <span class="leg-z">— Z</span>
+        </div>
+      </div>
+      <div class="chart-container chart-fft" id="chart-fft-x" hidden>
+        <div class="chart-label">FFT — X Axis</div>
+        <div class="chart-canvas" id="chart-fft-x-canvas"></div>
+      </div>
+      <div class="chart-container chart-fft" id="chart-fft-y" hidden>
+        <div class="chart-label">FFT — Y Axis</div>
+        <div class="chart-canvas" id="chart-fft-y-canvas"></div>
+      </div>
+      <div class="chart-container chart-fft" id="chart-fft-z" hidden>
+        <div class="chart-label">FFT — Z Axis</div>
+        <div class="chart-canvas" id="chart-fft-z-canvas"></div>
+      </div>
+      <div class="chart-container chart-fft" id="chart-fft-combined" hidden>
+        <div class="chart-label">FFT — All Axes</div>
+        <div class="chart-canvas" id="chart-fft-combined-canvas"></div>
+        <div class="legend">
+          <span class="leg-x">— X</span>
+          <span class="leg-y">— Y</span>
+          <span class="leg-z">— Z</span>
+        </div>
+      </div>
+    </section>
   </section>
 
   <!-- ── Sidebar ── -->
@@ -83,7 +119,12 @@
       <summary>Selected Sensor</summary>
       <div class="card">
         <div class="selected-info" id="selected-info">No sensor selected</div>
-        <label>Password<input type="password" id="in-pw" placeholder="(empty)" /></label>
+        <label>Password
+          <span class="pw-wrap">
+            <input type="password" id="in-pw" placeholder="(empty)" />
+            <button type="button" class="btn-toggle-pw" id="btn-toggle-pw" title="Show/hide password">&#128065;</button>
+          </span>
+        </label>
         <div class="btn-row">
           <button class="btn" id="btn-get-info">Get Info</button>
           <button class="btn" id="btn-stream-start">Stream ▶</button>
@@ -143,9 +184,33 @@
             <option>CUTOFF_NONE</option>
           </select>
         </label>
+        <label>FFT Size
+          <select id="cfg-fft-size">
+            <option>FFT_SIZE_256</option>
+            <option>FFT_SIZE_512</option>
+            <option>FFT_SIZE_1024</option>
+            <option>FFT_SIZE_2048</option>
+          </select>
+        </label>
         <div class="btn-row">
           <button class="btn" id="btn-get-cfg">Get Config</button>
           <button class="btn btn-primary" id="btn-set-cfg">Apply</button>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>FFT Config</summary>
+      <div class="card">
+        <label>FFT Stream
+          <select id="net-fft-stream">
+            <option>FEATURE_DISABLED</option>
+            <option>FEATURE_ENABLED</option>
+          </select>
+        </label>
+        <div class="btn-row">
+          <button class="btn" id="btn-fft-start">FFT Start</button>
+          <button class="btn" id="btn-fft-stop">FFT Stop</button>
         </div>
       </div>
     </details>

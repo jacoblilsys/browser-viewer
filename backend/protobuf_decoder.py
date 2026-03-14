@@ -1,5 +1,6 @@
 """
 Deserialises a raw TCP protobuf frame into a FrameData dataclass.
+Also decodes FFT magnitude frames into FFTFrameData.
 
 Import path bootstrap: adds the local protobuf/ directory to sys.path so that
 the generated *_pb2.py files can use bare package-relative imports
@@ -133,7 +134,7 @@ def _scale_factor(md) -> float:
     return factor
 
 
-# ── public dataclass ─────────────────────────────────────────────────────────
+# ── public dataclasses ───────────────────────────────────────────────────────
 
 @dataclass
 class FrameData:
@@ -147,6 +148,20 @@ class FrameData:
     units:   Dict[str, str]        = field(default_factory=dict)  # label → unit string
 
 
+@dataclass
+class FFTFrameData:
+    device_id: str
+    stream_uid: int
+    seq: int
+    timestamp_ns: int
+    recv_time_ns: int
+    fft_bins: int                          # bins per axis
+    fft_size: int                          # = fft_bins * 2
+    freq_hz: list                          # frequency axis [0..fft_bins-1]
+    magnitudes: Dict[str, list]            # {'x': [...], 'y': [...], 'z': [...]}
+    unit: str
+
+
 # ── decoder ──────────────────────────────────────────────────────────────────
 
 def _device_id_str(raw: bytes) -> str:
@@ -157,6 +172,8 @@ def _device_id_str(raw: bytes) -> str:
 
 # Track which streams we've already logged MetaData for.
 _logged_streams: set = set()
+
+_SAMPLE_RATE = 26667.0  # IIS3DWB native sample rate
 
 
 def decode_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | None':
@@ -254,3 +271,106 @@ def decode_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | None':
         columns=columns,
         units=units,
     )
+
+
+# ── FFT decoder ──────────────────────────────────────────────────────────────
+
+def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData | None':
+    """
+    Parse a raw TCP protobuf FFT frame. Returns FFTFrameData or None.
+    Caller should verify header.HasField('fft_stream') before calling,
+    or use decode_any() which dispatches automatically.
+    """
+    header = message_pb2.Header()
+    header.ParseFromString(payload_bytes)
+
+    if not header.HasField('fft_stream'):
+        return None
+
+    payload_msg = message_pb2.Payload()
+    payload_msg.ParseFromString(payload_bytes)
+    raw_payload = payload_msg.payload
+
+    fft = header.fft_stream
+    fft_bins = fft.fft_bins
+    fft_size = fft_bins * 2
+
+    if fft_bins == 0:
+        return None
+
+    # Device timestamp → ns
+    ts = header.device_timestamp
+    timestamp_ns = int(ts.seconds) * 1_000_000_000 + int(ts.nanos)
+
+    device_id = _device_id_str(header.device_id)
+    stream_uid = header.stream_uid
+
+    # Log once per FFT stream
+    stream_key = (device_id, stream_uid, 'fft')
+    if stream_key not in _logged_streams:
+        _logged_streams.add(stream_key)
+        _log.info('New FFT stream %s uid=%d  fft_size=%d  bins=%d  %d meta cols',
+                  device_id, stream_uid, fft_size, fft_bins, len(fft.meta_data))
+
+    # Parse 3 x fft_bins int16 magnitudes from raw payload
+    expected = 3 * fft_bins * 2
+    if len(raw_payload) < expected:
+        _log.warning('FFT payload too short: %d < %d', len(raw_payload), expected)
+        return None
+
+    all_mags = np.frombuffer(raw_payload[:expected], dtype='<i2').astype(np.float64)
+
+    # Build per-axis scaling from MetaData, apply fft_size * float_factor * 10^exp
+    # Map axis from MetaData.data_axis → 'x'/'y'/'z'
+    axis_names = []
+    scale_factors = []
+    unit = 'm/s²'
+    for md in fft.meta_data:
+        axis_label = _DATA_AXIS_STR.get(md.data_axis, 'x')
+        axis_names.append(axis_label)
+        sf = _scale_factor(md) * fft_size  # Q15 compensation
+        scale_factors.append(sf)
+        u = _UNIT_STR.get(md.data_unit, '')
+        if u:
+            unit = u
+
+    # Fallback if meta_data has fewer than 3 entries
+    while len(axis_names) < 3:
+        axis_names.append(['x', 'y', 'z'][len(axis_names)])
+        scale_factors.append(scale_factors[-1] if scale_factors else 1.0)
+
+    magnitudes: Dict[str, list] = {}
+    for i, (name, sf) in enumerate(zip(axis_names, scale_factors)):
+        raw_slice = all_mags[i * fft_bins:(i + 1) * fft_bins]
+        magnitudes[name] = (raw_slice * sf).tolist()
+
+    # Frequency axis: f[k] = k * sample_rate / fft_size
+    freq_hz = [k * _SAMPLE_RATE / fft_size for k in range(fft_bins)]
+
+    return FFTFrameData(
+        device_id=device_id,
+        stream_uid=stream_uid,
+        seq=header.sequence_number,
+        timestamp_ns=timestamp_ns,
+        recv_time_ns=recv_time_ns,
+        fft_bins=fft_bins,
+        fft_size=fft_size,
+        freq_hz=freq_hz,
+        magnitudes=magnitudes,
+        unit=unit,
+    )
+
+
+# ── unified dispatcher ───────────────────────────────────────────────────────
+
+def decode_any(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | FFTFrameData | None':
+    """Parse header once, dispatch to decode_frame or decode_fft_frame."""
+    header = message_pb2.Header()
+    header.ParseFromString(payload_bytes)
+
+    which = header.WhichOneof('specific_header')
+    if which == 'frame_stream':
+        return decode_frame(payload_bytes, recv_time_ns)
+    elif which == 'fft_stream':
+        return decode_fft_frame(payload_bytes, recv_time_ns)
+    return None

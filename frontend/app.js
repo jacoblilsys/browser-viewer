@@ -1,12 +1,13 @@
 /**
  * Browser Sensor Viewer — frontend logic
  *
- * WebSocket receives 60 Hz JSON envelopes from the backend:
+ * WebSocket receives JSON envelopes from the backend:
  *   { type:'frame', t_end_ns, rate_hz, axes:{ accel_x:{min,max,last,n}, ... } }
+ *   { type:'fft', fft_bins, fft_size, freq_hz, magnitudes:{x,y,z}, unit, seq }
  *   { type:'status', connected, logging, device_id }
  *
- * uPlot renders 3 series (X/Y/Z) with optional min/max envelope bands.
- * A sliding time window (seconds) is maintained on the client.
+ * uPlot renders raw waveform (time-domain) and FFT spectrum charts.
+ * Layout presets control multi-chart arrangement.
  */
 
 'use strict';
@@ -33,6 +34,13 @@ const ring = {
 let windowSec = 5;
 let showEnvelope = true;
 
+// FFT state
+let fftPlots = { x: null, y: null, z: null, combined: null };
+let fftFreqHz = null;
+let fftBins = 0;
+let currentLayout = localStorage.getItem('chartLayout') || 'raw-only';
+let _fftReceived = false;  // whether we've ever received FFT data
+
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const dotSensor = document.getElementById('dot-sensor');
 const dotLog    = document.getElementById('dot-log');
@@ -46,8 +54,22 @@ const selFmt    = document.getElementById('sel-log-format');
 const btnClear  = document.getElementById('btn-clear');
 const selWindow = document.getElementById('sel-window');
 const chkEnv    = document.getElementById('chk-envelope');
-const chartDiv  = document.getElementById('chart');
 const outInfo   = document.getElementById('out-info');
+const chartsArea = document.getElementById('charts-area');
+const selLayout  = document.getElementById('sel-layout');
+
+// Chart canvas divs
+const rawCanvas      = document.getElementById('chart-raw-canvas');
+const fftXCanvas     = document.getElementById('chart-fft-x-canvas');
+const fftYCanvas     = document.getElementById('chart-fft-y-canvas');
+const fftZCanvas     = document.getElementById('chart-fft-z-canvas');
+const fftCombCanvas  = document.getElementById('chart-fft-combined-canvas');
+
+// FFT container divs
+const fftXContainer    = document.getElementById('chart-fft-x');
+const fftYContainer    = document.getElementById('chart-fft-y');
+const fftZContainer    = document.getElementById('chart-fft-z');
+const fftCombContainer = document.getElementById('chart-fft-combined');
 
 // Phase-2 control elements
 const inPw         = document.getElementById('in-pw');
@@ -62,10 +84,58 @@ const hostInfo   = document.getElementById('host-info');
 const btnTheme   = document.getElementById('btn-theme');
 const themeIcon  = document.getElementById('theme-icon');
 
-// ── uPlot setup ───────────────────────────────────────────────────────────────
+// ── Layout manager ──────────────────────────────────────────────────────────
+const LAYOUTS = ['raw-only', '1+3-vert', '2x2', 'side-by-side', 'raw+1fft'];
+
+function setLayout(id) {
+  if (!LAYOUTS.includes(id)) id = 'raw-only';
+  currentLayout = id;
+  localStorage.setItem('chartLayout', id);
+  selLayout.value = id;
+
+  // Remove all layout classes, add the current one
+  for (const l of LAYOUTS) {
+    chartsArea.classList.remove('layout-' + l);
+  }
+  chartsArea.classList.add('layout-' + id);
+
+  // Show/hide FFT containers based on layout
+  const showSeparate = ['1+3-vert', '2x2', 'side-by-side'].includes(id);
+  const showCombined = id === 'raw+1fft';
+
+  fftXContainer.hidden    = !showSeparate;
+  fftYContainer.hidden    = !showSeparate;
+  fftZContainer.hidden    = !showSeparate;
+  fftCombContainer.hidden = !showCombined;
+
+  // Trigger resize on all active uPlot instances
+  requestAnimationFrame(() => {
+    resizeAllPlots();
+  });
+}
+
+function resizeAllPlots() {
+  if (plot && rawCanvas.clientWidth > 0) {
+    plot.setSize({ width: rawCanvas.clientWidth, height: rawCanvas.clientHeight });
+  }
+  for (const axis of ['x', 'y', 'z']) {
+    const p = fftPlots[axis];
+    const canvas = { x: fftXCanvas, y: fftYCanvas, z: fftZCanvas }[axis];
+    if (p && !canvas.parentElement.hidden && canvas.clientWidth > 0) {
+      p.setSize({ width: canvas.clientWidth, height: canvas.clientHeight });
+    }
+  }
+  if (fftPlots.combined && !fftCombContainer.hidden && fftCombCanvas.clientWidth > 0) {
+    fftPlots.combined.setSize({ width: fftCombCanvas.clientWidth, height: fftCombCanvas.clientHeight });
+  }
+}
+
+selLayout.addEventListener('change', () => setLayout(selLayout.value));
+
+// ── uPlot setup (raw waveform) ──────────────────────────────────────────────
 function makeOpts(w, h) {
   const e = showEnvelope;
-  const alpha = (hex) => hex + '55';  // semi-transparent fill
+  const alpha = (hex) => hex + '55';
   return {
     width:  w,
     height: h,
@@ -77,24 +147,15 @@ function makeOpts(w, h) {
       { stroke: '#aaa', ticks: { stroke: '#333' }, grid: { stroke: '#2a3a5a' } },
     ],
     series: [
-      {},                                           // [0] time (x-axis)
-      // X envelope min
+      {},
       { stroke: 'transparent', fill: alpha('#e05252'), paths: uPlot.paths.linear(), show: e },
-      // X envelope max
       { stroke: 'transparent', fill: alpha('#e05252'), paths: uPlot.paths.linear(), show: e },
-      // X last
       { stroke: '#e05252', width: 1.5, paths: uPlot.paths.linear() },
-      // Y envelope min
       { stroke: 'transparent', fill: alpha('#52c45a'), paths: uPlot.paths.linear(), show: e },
-      // Y envelope max
       { stroke: 'transparent', fill: alpha('#52c45a'), paths: uPlot.paths.linear(), show: e },
-      // Y last
       { stroke: '#52c45a', width: 1.5, paths: uPlot.paths.linear() },
-      // Z envelope min
       { stroke: 'transparent', fill: alpha('#5296e0'), paths: uPlot.paths.linear(), show: e },
-      // Z envelope max
       { stroke: 'transparent', fill: alpha('#5296e0'), paths: uPlot.paths.linear(), show: e },
-      // Z last
       { stroke: '#5296e0', width: 1.5, paths: uPlot.paths.linear() },
     ],
     scales: {
@@ -106,9 +167,9 @@ function makeOpts(w, h) {
 
 function initPlot() {
   if (plot) plot.destroy();
-  const w = chartDiv.clientWidth  || 800;
-  const h = chartDiv.clientHeight || 400;
-  plot = new uPlot(makeOpts(w, h), emptyData(), chartDiv);
+  const w = rawCanvas.clientWidth  || 800;
+  const h = rawCanvas.clientHeight || 400;
+  plot = new uPlot(makeOpts(w, h), emptyData(), rawCanvas);
 }
 
 function emptyData() {
@@ -130,11 +191,69 @@ function buildPlotData() {
   ];
 }
 
-// Resize observer
-new ResizeObserver(() => {
-  if (!plot) return;
-  plot.setSize({ width: chartDiv.clientWidth, height: chartDiv.clientHeight });
-}).observe(chartDiv);
+// Resize observer for the raw chart
+new ResizeObserver(() => resizeAllPlots()).observe(chartsArea);
+
+// ── FFT chart creation ──────────────────────────────────────────────────────
+function makeFftOpts(w, h, color, label) {
+  return {
+    width: w,
+    height: h,
+    pxAlign: false,
+    cursor: { show: true },
+    legend: { show: false },
+    axes: [
+      { stroke: '#666', ticks: { stroke: '#333' }, grid: { stroke: '#333' }, label: 'Hz' },
+      { stroke: '#aaa', ticks: { stroke: '#333' }, grid: { stroke: '#2a3a5a' }, label: label },
+    ],
+    series: [
+      {},
+      { stroke: color, width: 1.5, paths: uPlot.paths.linear(), fill: color + '22' },
+    ],
+    scales: {
+      x: { time: false },
+      y: { auto: true },
+    },
+  };
+}
+
+function makeFftCombinedOpts(w, h, unit) {
+  return {
+    width: w,
+    height: h,
+    pxAlign: false,
+    cursor: { show: true },
+    legend: { show: false },
+    axes: [
+      { stroke: '#666', ticks: { stroke: '#333' }, grid: { stroke: '#333' }, label: 'Hz' },
+      { stroke: '#aaa', ticks: { stroke: '#333' }, grid: { stroke: '#2a3a5a' }, label: unit },
+    ],
+    series: [
+      {},
+      { stroke: '#e05252', width: 1.5, paths: uPlot.paths.linear() },
+      { stroke: '#52c45a', width: 1.5, paths: uPlot.paths.linear() },
+      { stroke: '#5296e0', width: 1.5, paths: uPlot.paths.linear() },
+    ],
+    scales: {
+      x: { time: false },
+      y: { auto: true },
+    },
+  };
+}
+
+function ensureFftPlot(axis, canvas, color, unit) {
+  if (fftPlots[axis]) return;
+  const w = canvas.clientWidth || 400;
+  const h = canvas.clientHeight || 200;
+  fftPlots[axis] = new uPlot(makeFftOpts(w, h, color, unit), [[], []], canvas);
+}
+
+function ensureFftCombinedPlot(unit) {
+  if (fftPlots.combined) return;
+  const w = fftCombCanvas.clientWidth || 400;
+  const h = fftCombCanvas.clientHeight || 200;
+  fftPlots.combined = new uPlot(makeFftCombinedOpts(w, h, unit), [[], [], [], []], fftCombCanvas);
+}
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function connect() {
@@ -160,6 +279,7 @@ function connect() {
     try { msg = JSON.parse(ev.data); } catch { return; }
 
     if (msg.type === 'frame')  handleFrame(msg);
+    if (msg.type === 'fft')    handleFFT(msg);
     if (msg.type === 'status') handleStatus(msg);
   };
 }
@@ -167,15 +287,11 @@ function connect() {
 function handleFrame(msg) {
   const axes = msg.axes || {};
 
-  // Stream restart (ODR/FSR change) — clear ring buffers so stale data
-  // from the old stream doesn't bleed into the new one.
   if (msg.stream_uid !== undefined && msg.stream_uid !== _streamUid) {
     _streamUid = msg.stream_uid;
     for (const k of Object.keys(ring)) ring[k] = [];
   }
 
-  // Skip ticks where the backend emitted nothing (gap during reconnect).
-  // Avoids pushing 0-fallbacks that produce triangular artifacts.
   if (Object.keys(axes).length === 0) return;
 
   const tSec = msg.t_end_ns / 1e9;
@@ -185,7 +301,6 @@ function handleFrame(msg) {
     return (a && key in a) ? a[key] : null;
   };
 
-  // Only push a time point if at least one axis has real data.
   const xMin = get('accel_x', 'min'), xMax = get('accel_x', 'max'), xLast = get('accel_x', 'last');
   const yMin = get('accel_y', 'min'), yMax = get('accel_y', 'max'), yLast = get('accel_y', 'last');
   const zMin = get('accel_z', 'min'), zMax = get('accel_z', 'max'), zLast = get('accel_z', 'last');
@@ -193,20 +308,16 @@ function handleFrame(msg) {
   if (xLast === null && yLast === null && zLast === null) return;
 
   ring.t.push(tSec);
-  // uPlot accepts null for missing points (rendered as gaps, not zeros)
   ring.x_min.push(xMin);  ring.x_max.push(xMax);  ring.x_last.push(xLast);
   ring.y_min.push(yMin);  ring.y_max.push(yMax);  ring.y_last.push(yLast);
   ring.z_min.push(zMin);  ring.z_max.push(zMax);  ring.z_last.push(zLast);
 
-  // Trim old samples
   while (ring.t.length > MAX_PTS) {
     for (const k of Object.keys(ring)) ring[k].shift();
   }
 
-  // Update rate label
   if (msg.rate_hz) lblRate.textContent = `${(msg.rate_hz / 1000).toFixed(1)} kHz`;
 
-  // Update Y axis unit label from MetaData
   if (msg.units) {
     const unit = msg.units['accel_x'] || msg.units['accel_y'] || msg.units['accel_z']
               || msg.units['force_x'] || msg.units[Object.keys(msg.units)[0]] || '';
@@ -216,8 +327,46 @@ function handleFrame(msg) {
     }
   }
 
-  // Redraw
   if (plot) plot.setData(buildPlotData());
+}
+
+function handleFFT(msg) {
+  const freq = msg.freq_hz;
+  const mags = msg.magnitudes;
+  const unit = msg.unit || 'm/s²';
+
+  if (!freq || !mags) return;
+
+  // Auto-show: switch from raw-only to 1+3-vert on first FFT data
+  if (!_fftReceived) {
+    _fftReceived = true;
+    if (currentLayout === 'raw-only') {
+      setLayout('1+3-vert');
+    }
+  }
+
+  fftFreqHz = freq;
+  fftBins = msg.fft_bins;
+
+  // Update individual axis plots (for 1+3-vert, 2x2, side-by-side)
+  if (!fftXContainer.hidden) {
+    ensureFftPlot('x', fftXCanvas, '#e05252', unit);
+    fftPlots.x.setData([freq, mags.x]);
+  }
+  if (!fftYContainer.hidden) {
+    ensureFftPlot('y', fftYCanvas, '#52c45a', unit);
+    fftPlots.y.setData([freq, mags.y]);
+  }
+  if (!fftZContainer.hidden) {
+    ensureFftPlot('z', fftZCanvas, '#5296e0', unit);
+    fftPlots.z.setData([freq, mags.z]);
+  }
+
+  // Update combined plot (for raw+1fft)
+  if (!fftCombContainer.hidden) {
+    ensureFftCombinedPlot(unit);
+    fftPlots.combined.setData([freq, mags.x, mags.y, mags.z]);
+  }
 }
 
 function handleStatus(msg) {
@@ -254,7 +403,6 @@ selFmt.addEventListener('change', async () => {
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
     alert(err.detail || 'Failed to change format');
-    // revert dropdown
     const cur = await (await fetch('/api/logging/format')).json();
     selFmt.value = cur.format;
   }
@@ -264,6 +412,11 @@ selFmt.addEventListener('change', async () => {
 btnClear.addEventListener('click', () => {
   for (const k of Object.keys(ring)) ring[k] = [];
   if (plot) plot.setData(emptyData());
+  // Clear FFT plots too
+  for (const axis of ['x', 'y', 'z']) {
+    if (fftPlots[axis]) fftPlots[axis].setData([[], []]);
+  }
+  if (fftPlots.combined) fftPlots.combined.setData([[], [], [], []]);
 });
 
 // ── window selector ───────────────────────────────────────────────────────────
@@ -274,7 +427,7 @@ selWindow.addEventListener('change', () => {
 // ── envelope toggle ───────────────────────────────────────────────────────────
 chkEnv.addEventListener('change', () => {
   showEnvelope = chkEnv.checked;
-  initPlot();  // rebuild with updated series visibility
+  initPlot();
 });
 
 // ── Phase 2: sensor control ───────────────────────────────────────────────────
@@ -308,7 +461,6 @@ document.getElementById('btn-get-info').addEventListener('click', async () => {
 document.getElementById('btn-get-cfg').addEventListener('click', async () => {
   const d = await apiPost('/api/sensor/config', sensorBody());
   outInfo.textContent = JSON.stringify(d, null, 2);
-  // Populate fields
   if (!d.detail) {
     document.getElementById('cfg-fs').value     = d.full_scale  || '';
     document.getElementById('cfg-axes').value   = d.axes        || '';
@@ -316,6 +468,7 @@ document.getElementById('btn-get-cfg').addEventListener('click', async () => {
     const f = d.filter || {};
     document.getElementById('cfg-filt').value   = f.filter_enabled || '';
     document.getElementById('cfg-cutoff').value = f.filter_cutoff  || '';
+    if (d.fft_size) document.getElementById('cfg-fft-size').value = d.fft_size;
   }
 });
 
@@ -326,6 +479,7 @@ document.getElementById('btn-set-cfg').addEventListener('click', async () => {
     odr_div:        document.getElementById('cfg-odr').value   || null,
     filter_enabled: document.getElementById('cfg-filt').value  || null,
     filter_cutoff:  document.getElementById('cfg-cutoff').value || null,
+    fft_size:       document.getElementById('cfg-fft-size').value || null,
   }));
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
@@ -342,6 +496,7 @@ document.getElementById('btn-get-net').addEventListener('click', async () => {
     document.getElementById('net-ntp-ip').value       = d.ntp_server_ip || '';
     document.getElementById('net-dhcp').value         = d.dhcp         || 'FEATURE_DISABLED';
     document.getElementById('net-stream').value       = d.data_stream  || 'FEATURE_DISABLED';
+    if (d.fft_stream) document.getElementById('net-fft-stream').value = d.fft_stream;
   }
 });
 
@@ -356,6 +511,7 @@ document.getElementById('btn-set-net').addEventListener('click', async () => {
     ntp_server_ip: document.getElementById('net-ntp-ip').value    || null,
     dhcp:        document.getElementById('net-dhcp').value        || null,
     data_stream: document.getElementById('net-stream').value      || null,
+    fft_stream:  document.getElementById('net-fft-stream').value  || null,
   }));
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
@@ -367,6 +523,17 @@ document.getElementById('btn-stream-start').addEventListener('click', async () =
 
 document.getElementById('btn-stream-stop').addEventListener('click', async () => {
   const d = await apiPost('/api/stream/stop', sensorBody());
+  outInfo.textContent = JSON.stringify(d, null, 2);
+});
+
+// ── FFT stream buttons ──────────────────────────────────────────────────────
+document.getElementById('btn-fft-start').addEventListener('click', async () => {
+  const d = await apiPost('/api/stream/fft/start', sensorBody());
+  outInfo.textContent = JSON.stringify(d, null, 2);
+});
+
+document.getElementById('btn-fft-stop').addEventListener('click', async () => {
+  const d = await apiPost('/api/stream/fft/stop', sensorBody());
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
 
@@ -406,13 +573,11 @@ function renderDeviceList(devices) {
       <button class="btn btn-setup" data-ip="${d.ip}" data-mac="${d.mac}" title="Set server address to this machine">Setup</button>
     `;
 
-    // Click row to select
     el.addEventListener('click', (e) => {
-      if (e.target.classList.contains('btn-setup')) return; // handled separately
+      if (e.target.classList.contains('btn-setup')) return;
       selectSensor(d);
     });
 
-    // Setup button — point sensor at this server
     el.querySelector('.btn-setup').addEventListener('click', async (e) => {
       e.stopPropagation();
       selectSensor(d);
@@ -438,7 +603,6 @@ function renderDeviceList(devices) {
 function selectSensor(d) {
   selectedSensor = { ip: d.ip, mac: d.mac };
   selectedInfo.textContent = `${d.mac}  (${d.ip})`;
-  // Highlight selected row
   deviceListEl.querySelectorAll('.device-item').forEach(el => {
     el.classList.toggle('selected', el.querySelector('.device-mac')?.textContent === d.mac);
   });
@@ -450,20 +614,18 @@ document.getElementById('btn-refresh-devices').addEventListener('click', (e) => 
   refreshDevices();
 });
 
-// Auto-refresh every 10s
 _refreshTimer = setInterval(refreshDevices, 10000);
 
 // ── theme toggle ─────────────────────────────────────────────────────────────
 function applyTheme(isLight) {
   document.body.classList.toggle('light', isLight);
-  themeIcon.innerHTML = isLight ? '&#9790;' : '&#9788;';  // moon / sun
+  themeIcon.innerHTML = isLight ? '&#9790;' : '&#9788;';
   localStorage.setItem('theme', isLight ? 'light' : 'dark');
   initPlot();
 }
 btnTheme.addEventListener('click', () => {
   applyTheme(!document.body.classList.contains('light'));
 });
-// Restore saved theme
 if (localStorage.getItem('theme') === 'light') {
   applyTheme(true);
 }
@@ -478,13 +640,22 @@ async function updateHostInfo() {
   }
 }
 
+// ── password persistence & toggle ─────────────────────────────────────────────
+inPw.value = localStorage.getItem('sensorPw') || '';
+inPw.addEventListener('input', () => localStorage.setItem('sensorPw', inPw.value));
+
+document.getElementById('btn-toggle-pw').addEventListener('click', () => {
+  const show = inPw.type === 'password';
+  inPw.type = show ? 'text' : 'password';
+});
+
 // ── init ──────────────────────────────────────────────────────────────────────
+setLayout(currentLayout);
 initPlot();
 connect();
 refreshDevices();
 updateHostInfo();
 
-// Fetch initial log format
 fetch('/api/logging/format').then(r => r.json()).then(d => {
   selFmt.value = d.format;
 }).catch(() => {});
