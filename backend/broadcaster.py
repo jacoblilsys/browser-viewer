@@ -38,6 +38,17 @@ class Broadcaster:
         self._fft_task: Optional[asyncio.Task] = None
         self._fft_interval = 1.0 / 30  # 30 Hz throttle
 
+        # Pause flag — when True, buffers are drained but nothing is sent
+        self._paused: bool = False
+
+        # Burst capture state
+        self._burst_active: bool = False
+        self._burst_samples: Dict[str, list] = {}
+        self._burst_t_start_ns: int = 0
+        self._burst_duration: float = 0.0
+        self._burst_start_time: float = 0.0
+        self._burst_fft_frames: list = []
+
     # ── client management ────────────────────────────────────────────────────
 
     async def connect(self, ws: WebSocket):
@@ -47,13 +58,39 @@ class Broadcaster:
     async def disconnect(self, ws: WebSocket):
         self._clients.discard(ws)
 
+    # ── pause / resume ─────────────────────────────────────────────────────
+
+    def pause(self):
+        self._paused = True
+
+    def resume(self):
+        self._paused = False
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    # ── burst capture ──────────────────────────────────────────────────────
+
+    def start_burst(self, duration: float):
+        self._burst_samples.clear()
+        self._burst_fft_frames = []
+        self._burst_t_start_ns = 0
+        self._burst_duration = duration
+        self._burst_start_time = time.monotonic()
+        self._burst_active = True
+
+    @property
+    def burst_active(self) -> bool:
+        return self._burst_active
+
     # ── data ingestion ───────────────────────────────────────────────────────
 
     async def push(self, frame: FrameData):
+        burst_done = False
         async with self._lock:
             new_key = (frame.device_id, frame.stream_uid)
             if new_key != self._stream_key:
-                # Stream restarted (ODR/FSR change) — flush stale samples
                 self._buffers.clear()
                 self._stream_key = new_key
             self._last_frame = frame
@@ -63,10 +100,50 @@ class Broadcaster:
                     self._buffers[label] = deque()
                 self._buffers[label].extend(arr.tolist())
 
+            # Accumulate for burst capture
+            if self._burst_active:
+                if self._burst_t_start_ns == 0:
+                    self._burst_t_start_ns = frame.recv_time_ns
+                for label, arr in frame.columns.items():
+                    if label not in self._burst_samples:
+                        self._burst_samples[label] = []
+                    self._burst_samples[label].extend(arr.tolist())
+                if time.monotonic() - self._burst_start_time >= self._burst_duration:
+                    burst_done = True
+
+        if burst_done:
+            await self._finish_burst(frame)
+
     async def push_fft(self, fft: FFTFrameData):
         async with self._fft_lock:
             self._fft_frame = fft
             self._fft_dirty = True
+            if self._burst_active:
+                self._burst_fft_frames.append({
+                    'seq':        fft.seq,
+                    'fft_bins':   fft.fft_bins,
+                    'fft_size':   fft.fft_size,
+                    'freq_hz':    fft.freq_hz,
+                    'magnitudes': fft.magnitudes,
+                    'psd':        fft.psd,
+                    'unit':       fft.unit,
+                })
+
+    async def _finish_burst(self, frame: FrameData):
+        self._burst_active = False
+        msg = json.dumps({
+            'type':           'burst',
+            'sample_rate_hz': frame.sample_rate_hz,
+            'stream_uid':     frame.stream_uid,
+            't_start_ns':     self._burst_t_start_ns,
+            't_end_ns':       frame.recv_time_ns,
+            'samples':        self._burst_samples,
+            'units':          dict(self._units),
+            'fft_snapshots':  self._burst_fft_frames,
+        })
+        self._burst_samples = {}
+        self._burst_fft_frames = []
+        await self._broadcast(msg)
 
     # ── broadcast loop ───────────────────────────────────────────────────────
 
@@ -101,6 +178,9 @@ class Broadcaster:
 
         if not snapshot and frame is None:
             return
+
+        if self._paused:
+            return  # drain buffers but don't send
 
         # Build per-axis envelope
         axes_data: Dict[str, dict] = {}
@@ -140,12 +220,16 @@ class Broadcaster:
         if fft is None:
             return
 
+        if self._paused:
+            return  # dirty flag already cleared; skip send
+
         msg = json.dumps({
             'type':       'fft',
             'fft_bins':   fft.fft_bins,
             'fft_size':   fft.fft_size,
             'freq_hz':    fft.freq_hz,
             'magnitudes': fft.magnitudes,
+            'psd':        fft.psd,
             'unit':       fft.unit,
             'seq':        fft.seq,
         })
@@ -154,15 +238,21 @@ class Broadcaster:
 
     async def broadcast_status(self, connected: bool, logging: bool,
                                device_id: str = '', sensor_ip: str = '',
-                               log_format: str = 'tsv'):
-        msg = json.dumps({
+                               log_format: str = 'tsv',
+                               stats: dict | None = None):
+        envelope = {
             'type':       'status',
             'connected':  connected,
             'logging':    logging,
+            'streaming':  not self._paused,
+            'burst':      self._burst_active,
             'device_id':  device_id,
             'sensor_ip':  sensor_ip,
             'log_format': log_format,
-        })
+        }
+        if stats:
+            envelope['stats'] = stats
+        msg = json.dumps(envelope)
         await self._broadcast(msg)
 
     async def _broadcast(self, msg: str):

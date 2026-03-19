@@ -63,6 +63,15 @@ _log_writer   = LogManager(output_dir=_LOG_DIR)
 _mdns         = MDNSScanner()
 _logging_on   = False
 
+# ── counters ──────────────────────────────────────────────────────────────────
+_stats = {
+    'frames': 0,
+    'samples': 0,
+    'fft_frames': 0,
+    'packets': 0,
+    'errors': 0,
+}
+
 
 # ── lifespan ─────────────────────────────────────────────────────────────────
 
@@ -102,9 +111,11 @@ async def _drain_queue():
     _last_device_id = ''
     while True:
         payload_bytes, recv_time_ns = await _queue.get()
+        _stats['packets'] += 1
         try:
             result = decode_any(payload_bytes, recv_time_ns)
         except Exception as e:
+            _stats['errors'] += 1
             _log.warning('decode failed: %s', e)
             continue
 
@@ -112,6 +123,8 @@ async def _drain_queue():
             continue
 
         if isinstance(result, FrameData):
+            _stats['frames'] += 1
+            _stats['samples'] += sum(len(arr) for arr in result.columns.values())
             _last_device_id = result.device_id
 
             if _logging_on:
@@ -130,9 +143,11 @@ async def _drain_queue():
                 device_id=result.device_id,
                 sensor_ip=sensor_ip,
                 log_format=_log_writer.fmt,
+                stats=dict(_stats),
             )
 
         elif isinstance(result, FFTFrameData):
+            _stats['fft_frames'] += 1
             _last_device_id = result.device_id
             await _broadcaster.push_fft(result)
 
@@ -152,6 +167,7 @@ async def _status_heartbeat():
             device_id=_last_device_id,
             sensor_ip=sensor_ip,
             log_format=_log_writer.fmt,
+            stats=dict(_stats),
         )
 
 
@@ -181,8 +197,16 @@ async def api_status():
     return {
         'connected': connected,
         'logging':   _logging_on,
+        'streaming': not _broadcaster.paused,
         'tcp_port':  _TCP_PORT,
     }
+
+
+@app.post('/api/stats/reset')
+async def api_stats_reset():
+    for k in _stats:
+        _stats[k] = 0
+    return {'ok': True}
 
 
 @app.post('/api/logging/start')
@@ -320,21 +344,26 @@ async def network_config_set(body: NetworkConfigPayload):
 
 
 @app.post('/api/stream/start')
-async def api_stream_start(body: SensorTarget):
-    try:
-        await _sensor_api().stream_start(body.target_ip, body.mac, body.password)
-        return {'ok': True}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+async def api_stream_start():
+    _broadcaster.resume()
+    return {'ok': True, 'streaming': True}
 
 
 @app.post('/api/stream/stop')
-async def api_stream_stop(body: SensorTarget):
-    try:
-        await _sensor_api().stream_stop(body.target_ip, body.mac, body.password)
-        return {'ok': True}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+async def api_stream_stop():
+    _broadcaster.pause()
+    return {'ok': True, 'streaming': False}
+
+
+class BurstPayload(BaseModel):
+    duration: float = 1.0
+
+
+@app.post('/api/burst')
+async def api_burst(body: BurstPayload):
+    dur = max(0.1, min(body.duration, 30.0))
+    _broadcaster.start_burst(dur)
+    return {'ok': True, 'duration': dur}
 
 
 @app.post('/api/stream/fft/start')
@@ -359,6 +388,15 @@ async def api_fft_stop(body: SensorTarget):
 async def api_reset(body: SensorTarget):
     try:
         await _sensor_api().reset(body.target_ip, body.mac, body.password)
+        return {'ok': True}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post('/api/sensor/boot')
+async def api_boot_now(body: SensorTarget):
+    try:
+        await _sensor_api().boot_now(body.target_ip, body.mac, body.password)
         return {'ok': True}
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))

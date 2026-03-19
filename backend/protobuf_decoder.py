@@ -159,6 +159,7 @@ class FFTFrameData:
     fft_size: int                          # = fft_bins * 2
     freq_hz: list                          # frequency axis [0..fft_bins-1]
     magnitudes: Dict[str, list]            # {'x': [...], 'y': [...], 'z': [...]}
+    psd: Dict[str, list]                   # PSD: {'x': [...], ...} in (unit)²/Hz
     unit: str
 
 
@@ -173,7 +174,7 @@ def _device_id_str(raw: bytes) -> str:
 # Track which streams we've already logged MetaData for.
 _logged_streams: set = set()
 
-_SAMPLE_RATE = 26667.0  # IIS3DWB native sample rate
+_SAMPLE_RATE = 26667.0  # IIS3DWB native sample rate (ODR_DIV_1)
 
 
 def decode_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | None':
@@ -204,7 +205,6 @@ def decode_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | None':
         rate_hz = fs.actual_frequency_hz
     elif fs.HasField('target_frequency_hz'):
         rate_hz = fs.target_frequency_hz
-
     device_id = _device_id_str(header.device_id)
     stream_uid = header.stream_uid
 
@@ -340,9 +340,15 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         scale_factors.append(scale_factors[-1] if scale_factors else 1.0)
 
     magnitudes: Dict[str, list] = {}
+    psd: Dict[str, list] = {}
+    # PSD normalisation: freq_resolution = fs / fft_size
+    freq_res = _SAMPLE_RATE / fft_size  # Hz per bin
     for i, (name, sf) in enumerate(zip(axis_names, scale_factors)):
         raw_slice = all_mags[i * fft_bins:(i + 1) * fft_bins]
-        magnitudes[name] = (raw_slice * sf).tolist()
+        scaled = raw_slice * sf
+        magnitudes[name] = scaled.tolist()
+        # PSD = magnitude² / freq_resolution  → (unit)²/Hz
+        psd[name] = (scaled * scaled / freq_res).tolist()
 
     # Frequency axis: f[k] = k * sample_rate / fft_size
     freq_hz = [k * _SAMPLE_RATE / fft_size for k in range(fft_bins)]
@@ -357,6 +363,7 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         fft_size=fft_size,
         freq_hz=freq_hz,
         magnitudes=magnitudes,
+        psd=psd,
         unit=unit,
     )
 

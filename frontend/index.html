@@ -12,12 +12,11 @@
 <body>
 
 <header class="topbar">
+  <img src="/static/logo.gif" alt="Lillie Systems" class="app-logo" />
   <span class="app-title">Lillie System</span>
-  <span class="host-info" id="host-info">This host (Server): —</span>
+  <span class="host-info" id="host-info" title="The IP and TCP port this server is listening on for sensor data">This host (Server): —</span>
   <div class="topbar-right">
-    <button class="theme-btn" id="btn-theme" title="Toggle light/dark theme">
-      <span id="theme-icon">&#9788;</span>
-    </button>
+    <button class="settings-btn" id="btn-settings" title="Application settings">&#9881;</button>
   </div>
 </header>
 
@@ -27,28 +26,22 @@
   <section class="chart-panel">
     <div class="chart-toolbar">
       <div class="chart-sensor-info">
-        <span class="dot" id="dot-sensor" title="Sensor TCP"></span>
-        <span id="lbl-device">No device</span>
+        <span class="dot" id="dot-sensor" title="Sensor TCP connection status — green when a sensor is connected"></span>
+        <span id="lbl-device" title="Device ID and IP of the currently connected sensor">No device</span>
         <span class="sep">|</span>
-        <span id="lbl-rate">— Hz</span>
+        <span id="lbl-rate" title="Actual sample rate reported by the sensor">— Hz</span>
         <span class="sep">|</span>
-        <span class="dot" id="dot-log" title="Logging"></span>
-        <span id="lbl-log">Not logging</span>
+        <span class="dot" id="dot-log" title="Logging status — orange when actively logging to file"></span>
+        <span id="lbl-log" title="Whether data is being logged to disk">Not logging</span>
         <span class="sep">|</span>
-        <span class="dot" id="dot-ws" title="WebSocket"></span>
-        <span id="lbl-ws">Connecting…</span>
+        <span class="dot" id="dot-ws" title="WebSocket connection to the backend server"></span>
+        <span id="lbl-ws" title="Browser-to-backend WebSocket connection status">Connecting…</span>
       </div>
       <div class="chart-controls">
-        <label>Layout
-          <select id="sel-layout">
-            <option value="raw-only">Raw Only</option>
-            <option value="1+3-vert">Raw + 3 FFT</option>
-            <option value="2x2">2x2 Grid</option>
-            <option value="side-by-side">Side by Side</option>
-            <option value="raw+1fft">Raw + Combined FFT</option>
-          </select>
-        </label>
-        <label>Window
+        <button id="btn-add-window" class="btn btn-primary" title="Open a new chart window — choose from Raw Waveform, FFT, or PSD views">+ New Window</button>
+        <button id="btn-tile-grid" class="btn" title="Auto-arrange all open windows into an even grid layout">Tile Grid</button>
+        <button id="btn-tile-vertical" class="btn" title="Stack all open windows vertically at full width">Tile Vertical</button>
+        <label title="Time window for the raw waveform X-axis — how many seconds of data to display">Window
           <select id="sel-window">
             <option value="2">2 s</option>
             <option value="5" selected>5 s</option>
@@ -56,50 +49,27 @@
             <option value="30">30 s</option>
           </select>
         </label>
-        <label>
-          <input type="checkbox" id="chk-envelope" checked />
-          Min/max envelope
-        </label>
-        <select id="sel-log-format" class="log-format-select" title="Log file format">
+        <select id="sel-log-format" class="log-format-select" title="Log file format. TSV: tab-separated text file, human-readable. HDF5: compressed binary, efficient for large datasets. Change while not logging.">
           <option value="tsv">TSV</option>
           <option value="hdf5">HDF5</option>
         </select>
-        <button id="btn-log" class="btn">Start Logging</button>
-        <button id="btn-clear" class="btn">Clear</button>
+        <button id="btn-log" class="btn" title="Start or stop logging all incoming sensor data to a file on the server. Files are saved in the logs/ directory next to the backend. TSV files can be opened in any text editor or spreadsheet. HDF5 files can be read with Python (h5py), MATLAB, or similar tools.">Start Logging</button>
+        <button id="btn-clear" class="btn" title="Clear all chart data from memory — waveform ring buffers and FFT/PSD snapshots">Clear</button>
+        <button id="btn-export" class="btn" title="Export data from the focused chart window as CSV. Click a window first to select it (red border). Raw windows export time + XYZ values. FFT/PSD windows export frequency + magnitude/power.">Export Window Data</button>
+        <div class="toolbar-spacer"></div>
+        <span class="stats-bar" id="stats-bar" title="Live counters from the backend — resets when you click Reset or restart the server">
+          Pkts <span id="stat-packets" title="Total TCP packets received from the sensor">0</span>
+          &middot; Frames <span id="stat-frames" title="Total acceleration data frames decoded">0</span>
+          &middot; Samples <span id="stat-samples" title="Total individual samples across all axes">0</span>
+          &middot; FFT <span id="stat-fft" title="Total FFT frames received">0</span>
+        </span>
+        <button id="btn-stats-reset" class="btn btn-sm" title="Reset all backend counters (packets, frames, samples, FFT) to zero">Reset</button>
+        <button id="btn-toggle-console" class="btn btn-sm" title="Show or hide the floating console window — displays JSON responses from sensor API commands">Console</button>
       </div>
     </div>
 
-    <section class="charts-area layout-raw-only" id="charts-area">
-      <div class="chart-container" id="chart-raw">
-        <div class="chart-label">Raw Waveform</div>
-        <div class="chart-canvas" id="chart-raw-canvas"></div>
-        <div class="legend">
-          <span class="leg-x">— X</span>
-          <span class="leg-y">— Y</span>
-          <span class="leg-z">— Z</span>
-        </div>
-      </div>
-      <div class="chart-container chart-fft" id="chart-fft-x" hidden>
-        <div class="chart-label">FFT — X Axis</div>
-        <div class="chart-canvas" id="chart-fft-x-canvas"></div>
-      </div>
-      <div class="chart-container chart-fft" id="chart-fft-y" hidden>
-        <div class="chart-label">FFT — Y Axis</div>
-        <div class="chart-canvas" id="chart-fft-y-canvas"></div>
-      </div>
-      <div class="chart-container chart-fft" id="chart-fft-z" hidden>
-        <div class="chart-label">FFT — Z Axis</div>
-        <div class="chart-canvas" id="chart-fft-z-canvas"></div>
-      </div>
-      <div class="chart-container chart-fft" id="chart-fft-combined" hidden>
-        <div class="chart-label">FFT — All Axes</div>
-        <div class="chart-canvas" id="chart-fft-combined-canvas"></div>
-        <div class="legend">
-          <span class="leg-x">— X</span>
-          <span class="leg-y">— Y</span>
-          <span class="leg-z">— Z</span>
-        </div>
-      </div>
+    <section class="charts-area" id="charts-area">
+      <!-- Floating chart windows are created dynamically -->
     </section>
   </section>
 
@@ -107,7 +77,7 @@
   <aside class="sidebar">
 
     <details open>
-      <summary>Devices on Network <button class="btn btn-sm" id="btn-refresh-devices" title="Refresh">&#x21bb;</button></summary>
+      <summary>Devices on Network <button class="btn btn-sm" id="btn-refresh-devices" title="Scan the network for sensors via mDNS discovery">&#x21bb;</button></summary>
       <div class="card">
         <div id="device-list" class="device-list">
           <div class="device-empty">Scanning...</div>
@@ -118,18 +88,29 @@
     <details id="panel-sensor" open>
       <summary>Selected Sensor</summary>
       <div class="card">
-        <div class="selected-info" id="selected-info">No sensor selected</div>
-        <label>Password
+        <div class="selected-info" id="selected-info" title="Click a sensor in the device list above to select it">No sensor selected</div>
+        <label title="Authentication password for the sensor. Required for configuration commands. Leave empty if the sensor has no password set.">Password
           <span class="pw-wrap">
             <input type="password" id="in-pw" placeholder="(empty)" />
-            <button type="button" class="btn-toggle-pw" id="btn-toggle-pw" title="Show/hide password">&#128065;</button>
+            <button type="button" class="btn-toggle-pw" id="btn-toggle-pw" title="Show or hide the password text">&#128065;</button>
           </span>
         </label>
         <div class="btn-row">
-          <button class="btn" id="btn-get-info">Get Info</button>
-          <button class="btn" id="btn-stream-start">Stream ▶</button>
-          <button class="btn" id="btn-stream-stop">Stream ■</button>
-          <button class="btn btn-danger" id="btn-reset">Reset</button>
+          <button class="btn" id="btn-get-info" title="Query the selected sensor for its device information (firmware version, hardware ID, etc.)">Get Info</button>
+          <button class="btn btn-danger" id="btn-reset" title="Send a reset command to the sensor — the sensor will reboot">Reset</button>
+        </div>
+        <div class="stream-controls">
+          <button class="btn stream-btn" id="btn-stream-start" title="Resume streaming decimated data (min/max/last per axis) to the browser at 60 Hz. Low bandwidth, continuous. Does not require a sensor to be selected — controls the backend broadcaster.">Stream ▶</button>
+          <button class="btn stream-btn" id="btn-stream-stop" title="Pause streaming data to the browser. The backend continues receiving data from the sensor and logging if active. Click Stream ▶ to resume.">Stream ■</button>
+          <button class="btn stream-btn btn-primary" id="btn-burst" title="Capture every raw sample for the selected duration and send them all at once — like an oscilloscope single-shot trigger. Useful for detailed waveform analysis. You can zoom into the result with scroll wheel or drag-select.">Burst Capture</button>
+          <select id="sel-burst-duration" class="burst-duration-select" title="How long to capture raw samples for burst mode. Longer durations produce more data. At 26.7 kHz, 1 second = ~26,700 samples per axis.">
+            <option value="0.1">0.1 s</option>
+            <option value="0.5">0.5 s</option>
+            <option value="1" selected>1 s</option>
+            <option value="2">2 s</option>
+            <option value="5">5 s</option>
+            <option value="10">10 s</option>
+          </select>
         </div>
       </div>
     </details>
@@ -137,7 +118,7 @@
     <details>
       <summary>Sensor Config</summary>
       <div class="card">
-        <label>Full scale
+        <label title="Accelerometer full scale range. Higher values allow measuring stronger vibrations but with less resolution.">Full scale
           <select id="cfg-fs">
             <option>ACCEL_FS_2G</option>
             <option>ACCEL_FS_4G</option>
@@ -145,7 +126,7 @@
             <option>ACCEL_FS_16G</option>
           </select>
         </label>
-        <label>Axes
+        <label title="Which accelerometer axes to stream. Fewer axes = less bandwidth.">Axes
           <select id="cfg-axes">
             <option>AXIS_XYZ</option>
             <option>AXIS_X</option>
@@ -156,7 +137,7 @@
             <option>AXIS_YZ</option>
           </select>
         </label>
-        <label>ODR divisor
+        <label title="Output Data Rate divisor. DIV_1 = full 26.7 kHz, DIV_2 = 13.3 kHz, DIV_4 = 6.7 kHz, etc. Lower rate = less data, lower frequency range.">ODR divisor
           <select id="cfg-odr">
             <option>ODR_DIV_1</option>
             <option>ODR_DIV_2</option>
@@ -166,7 +147,7 @@
             <option>ODR_DIV_32</option>
           </select>
         </label>
-        <label>Filter
+        <label title="Digital filter applied to the accelerometer data before streaming.">Filter
           <select id="cfg-filt">
             <option>FILTER_NONE</option>
             <option>FILTER_LOW_PASS2</option>
@@ -174,7 +155,7 @@
             <option>FILTER_SLOPE_FILTER</option>
           </select>
         </label>
-        <label>Cutoff
+        <label title="Filter cutoff frequency. Only applies when a filter is enabled.">Cutoff
           <select id="cfg-cutoff">
             <option>CUTOFF_6p66_KHZ</option>
             <option>CUTOFF_2p66_KHZ</option>
@@ -184,7 +165,7 @@
             <option>CUTOFF_NONE</option>
           </select>
         </label>
-        <label>FFT Size
+        <label title="FFT window size computed on the sensor. Larger = better frequency resolution but slower update rate. 256 bins at 26.7 kHz updates ~208 times/sec, 2048 bins ~26 times/sec.">FFT Size
           <select id="cfg-fft-size">
             <option>FFT_SIZE_256</option>
             <option>FFT_SIZE_512</option>
@@ -193,8 +174,8 @@
           </select>
         </label>
         <div class="btn-row">
-          <button class="btn" id="btn-get-cfg">Get Config</button>
-          <button class="btn btn-primary" id="btn-set-cfg">Apply</button>
+          <button class="btn" id="btn-get-cfg" title="Read the current sensor configuration from the device">Get Config</button>
+          <button class="btn btn-primary" id="btn-set-cfg" title="Write the selected configuration to the sensor. The sensor will restart its data stream with the new settings.">Apply</button>
         </div>
       </div>
     </details>
@@ -202,15 +183,9 @@
     <details>
       <summary>FFT Config</summary>
       <div class="card">
-        <label>FFT Stream
-          <select id="net-fft-stream">
-            <option>FEATURE_DISABLED</option>
-            <option>FEATURE_ENABLED</option>
-          </select>
-        </label>
         <div class="btn-row">
-          <button class="btn" id="btn-fft-start">FFT Start</button>
-          <button class="btn" id="btn-fft-stop">FFT Stop</button>
+          <button class="btn" id="btn-fft-start" title="Start FFT streaming from the sensor. The sensor computes FFT on-board and sends frequency spectra alongside raw data. Requires a sensor to be selected.">FFT Start</button>
+          <button class="btn" id="btn-fft-stop" title="Stop FFT streaming from the sensor. Raw data streaming is not affected.">FFT Stop</button>
         </div>
       </div>
     </details>
@@ -218,27 +193,33 @@
     <details>
       <summary>Network Config</summary>
       <div class="card">
-        <label>IP           <input type="text" id="net-ip"  /></label>
-        <label>Netmask      <input type="text" id="net-mask"/></label>
-        <label>Gateway      <input type="text" id="net-gw"  /></label>
-        <label>Server IP    <input type="text" id="net-server-ip" /></label>
-        <label>Server Port  <input type="text" id="net-server-port" /></label>
-        <label>NTP Server   <input type="text" id="net-ntp-ip" /></label>
-        <label>DHCP
+        <label title="Static IP address of the sensor on the network.">IP           <input type="text" id="net-ip"  /></label>
+        <label title="Subnet mask for the sensor's network interface.">Netmask      <input type="text" id="net-mask"/></label>
+        <label title="Default gateway for the sensor.">Gateway      <input type="text" id="net-gw"  /></label>
+        <label title="IP address of the server that the sensor sends data to (this machine).">Server IP    <input type="text" id="net-server-ip" /></label>
+        <label title="TCP port on the server that the sensor connects to (default 8066).">Server Port  <input type="text" id="net-server-port" /></label>
+        <label title="NTP server address for time synchronization. Typically set to the same machine as the data server.">NTP Server   <input type="text" id="net-ntp-ip" /></label>
+        <label title="Enable or disable DHCP on the sensor. When enabled, the sensor gets its IP from the router automatically.">DHCP
           <select id="net-dhcp">
             <option>FEATURE_DISABLED</option>
             <option>FEATURE_ENABLED</option>
           </select>
         </label>
-        <label>Data Stream
+        <label title="Enable or disable the raw acceleration data stream over TCP.">Data Stream
           <select id="net-stream">
             <option>FEATURE_DISABLED</option>
             <option>FEATURE_ENABLED</option>
           </select>
         </label>
+        <label title="Enable or disable FFT data streaming as a persistent boot default. This is separate from the runtime FFT Start/Stop toggle.">FFT Stream
+          <select id="net-fft-stream">
+            <option>FEATURE_DISABLED</option>
+            <option>FEATURE_ENABLED</option>
+          </select>
+        </label>
         <div class="btn-row">
-          <button class="btn" id="btn-get-net">Get Config</button>
-          <button class="btn btn-primary" id="btn-set-net">Apply</button>
+          <button class="btn" id="btn-get-net" title="Read the current network configuration from the sensor">Get Config</button>
+          <button class="btn btn-primary" id="btn-set-net" title="Write the network configuration to the sensor. The sensor may reconnect with new settings.">Apply</button>
         </div>
       </div>
     </details>
@@ -246,10 +227,85 @@
   </aside>
 </main>
 
-<!-- ── Console output at bottom ── -->
-<footer class="console-footer">
+<!-- ── Floating console window ── -->
+<div class="console-float" id="console-float" hidden>
+  <div class="console-float-titlebar">
+    <span class="console-float-title">Console</span>
+    <button class="chart-window-close" id="btn-close-console" title="Close console window">&times;</button>
+  </div>
   <pre id="out-info" class="output-box"></pre>
-</footer>
+</div>
+
+<!-- ── "New Window" type picker popup ── -->
+<div class="popup-overlay" id="popup-overlay" hidden>
+  <div class="popup">
+    <div class="popup-title">Add Chart Window</div>
+    <div class="popup-options" id="popup-options"></div>
+    <button class="btn popup-cancel" id="popup-cancel">Cancel</button>
+  </div>
+</div>
+
+<!-- ── Setup sensor modal ── -->
+<div class="popup-overlay" id="setup-overlay" hidden>
+  <div class="popup setup-modal">
+    <div class="popup-title">Setup Sensor</div>
+    <div class="setup-info" id="setup-info"></div>
+    <div class="setup-section">
+      <div class="setup-heading">The following will be sent to the sensor:</div>
+      <ul class="setup-list">
+        <li>Server IP: <strong id="setup-server-ip">—</strong></li>
+        <li>Server Port: <strong id="setup-server-port">—</strong></li>
+        <li>NTP Server: <strong id="setup-ntp-ip">—</strong></li>
+        <li>Data Stream: <strong>Enabled</strong></li>
+      </ul>
+    </div>
+    <div class="setup-warning" id="setup-warning" hidden></div>
+    <div class="setup-section">
+      <div class="setup-heading">Sensor IP configuration:</div>
+      <div class="setup-ip-options">
+        <label class="setup-radio">
+          <input type="radio" name="setup-ip-mode" value="keep" checked />
+          Keep current IP (<span id="setup-current-ip">—</span>)
+        </label>
+        <label class="setup-radio">
+          <input type="radio" name="setup-ip-mode" value="dhcp" />
+          Enable DHCP (sensor gets IP from router)
+        </label>
+        <label class="setup-radio">
+          <input type="radio" name="setup-ip-mode" value="static" />
+          Set static IP:
+          <input type="text" id="setup-static-ip" placeholder="e.g. 192.168.1.50" class="setup-ip-input" />
+        </label>
+      </div>
+    </div>
+    <div class="btn-row" style="margin-top:.5rem">
+      <button class="btn btn-primary" id="btn-setup-confirm" title="Send all configuration to the sensor">Apply Setup</button>
+      <button class="btn" id="btn-setup-cancel" title="Cancel without sending anything">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Settings modal ── -->
+<div class="popup-overlay" id="settings-overlay" hidden>
+  <div class="popup setup-modal">
+    <div class="popup-title">Settings</div>
+    <div class="settings-group">
+      <label class="settings-toggle" title="Toggle between light and dark UI theme">
+        <input type="checkbox" id="chk-light-theme" />
+        Light theme
+      </label>
+    </div>
+    <div class="settings-group">
+      <label class="settings-toggle" title="When enabled, the viewer automatically sends a fast-boot command to any sensor discovered in bootloader mode. This skips the bootloader wait timer so the sensor starts its application firmware immediately.">
+        <input type="checkbox" id="chk-auto-boot" />
+        Auto fast-boot sensors in bootloader
+      </label>
+    </div>
+    <div class="btn-row" style="margin-top:.75rem">
+      <button class="btn" id="btn-settings-close">Close</button>
+    </div>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

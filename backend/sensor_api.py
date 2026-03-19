@@ -307,3 +307,9 @@ async def reset(target_ip: str, mac: str, password: str):
     req = _pb.Request(msg_version=1)
     req.command.reset_device = True
     _check(await _send_recv(target_ip, req.SerializeToString(), mac, password))
+
+
+async def boot_now(target_ip: str, mac: str, password: str):
+    req = _pb.Request(msg_version=1)
+    req.command.boot_now = True
+    _check(await _send_recv(target_ip, req.SerializeToString(), mac, password))
