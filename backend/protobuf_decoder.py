@@ -174,7 +174,7 @@ def _device_id_str(raw: bytes) -> str:
 # Track which streams we've already logged MetaData for.
 _logged_streams: set = set()
 
-_SAMPLE_RATE = 26667.0  # IIS3DWB native sample rate (ODR_DIV_1)
+_sample_rate = 26667.0  # Updated from FrameData when available
 
 
 def decode_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | None':
@@ -200,11 +200,14 @@ def decode_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | None':
     timestamp_ns = int(ts.seconds) * 1_000_000_000 + int(ts.nanos)
 
     # Sample rate
+    global _sample_rate
     rate_hz = 0.0
     if fs.HasField('actual_frequency_hz'):
         rate_hz = fs.actual_frequency_hz
     elif fs.HasField('target_frequency_hz'):
         rate_hz = fs.target_frequency_hz
+    if rate_hz > 0:
+        _sample_rate = rate_hz
     device_id = _device_id_str(header.device_id)
     stream_uid = header.stream_uid
 
@@ -342,7 +345,7 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
     magnitudes: Dict[str, list] = {}
     psd: Dict[str, list] = {}
     # PSD normalisation: freq_resolution = fs / fft_size
-    freq_res = _SAMPLE_RATE / fft_size  # Hz per bin
+    freq_res = _sample_rate / fft_size  # Hz per bin
     for i, (name, sf) in enumerate(zip(axis_names, scale_factors)):
         raw_slice = all_mags[i * fft_bins:(i + 1) * fft_bins]
         scaled = raw_slice * sf
@@ -351,7 +354,7 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         psd[name] = (scaled * scaled / freq_res).tolist()
 
     # Frequency axis: f[k] = k * sample_rate / fft_size
-    freq_hz = [k * _SAMPLE_RATE / fft_size for k in range(fft_bins)]
+    freq_hz = [k * _sample_rate / fft_size for k in range(fft_bins)]
 
     return FFTFrameData(
         device_id=device_id,

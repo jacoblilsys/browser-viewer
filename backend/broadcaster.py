@@ -48,6 +48,7 @@ class Broadcaster:
         self._burst_duration: float = 0.0
         self._burst_start_time: float = 0.0
         self._burst_fft_frames: list = []
+        self._was_paused: bool = False
 
     # ── client management ────────────────────────────────────────────────────
 
@@ -79,6 +80,9 @@ class Broadcaster:
         self._burst_duration = duration
         self._burst_start_time = time.monotonic()
         self._burst_active = True
+        # Pause decimated streaming so it doesn't fight with burst data on frontend
+        self._was_paused = self._paused
+        self._paused = True
 
     @property
     def burst_active(self) -> bool:
@@ -131,6 +135,8 @@ class Broadcaster:
 
     async def _finish_burst(self, frame: FrameData):
         self._burst_active = False
+        # Restore previous pause state
+        self._paused = self._was_paused
         msg = json.dumps({
             'type':           'burst',
             'sample_rate_hz': frame.sample_rate_hz,
