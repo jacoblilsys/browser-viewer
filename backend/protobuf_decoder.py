@@ -312,8 +312,9 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
     stream_key = (device_id, stream_uid, 'fft')
     if stream_key not in _logged_streams:
         _logged_streams.add(stream_key)
-        _log.info('New FFT stream %s uid=%d  fft_size=%d  bins=%d  %d meta cols',
-                  device_id, stream_uid, fft_size, fft_bins, len(fft.meta_data))
+        _log.info('New FFT stream %s uid=%d  fft_size=%d  bins=%d  rate=%.1f Hz  %d meta cols',
+                  device_id, stream_uid, fft_size, fft_bins,
+                  fft.actual_frame_rate_hz, len(fft.meta_data))
 
     # Parse 3 x fft_bins int16 magnitudes from raw payload
     expected = 3 * fft_bins * 2
@@ -344,8 +345,10 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
 
     magnitudes: Dict[str, list] = {}
     psd: Dict[str, list] = {}
+    # Use sample rate from FFT header if available, else fall back to _sample_rate
+    fft_rate = fft.actual_frame_rate_hz if fft.actual_frame_rate_hz > 0 else _sample_rate
     # PSD normalisation: freq_resolution = fs / fft_size
-    freq_res = _sample_rate / fft_size  # Hz per bin
+    freq_res = fft_rate / fft_size  # Hz per bin
     for i, (name, sf) in enumerate(zip(axis_names, scale_factors)):
         raw_slice = all_mags[i * fft_bins:(i + 1) * fft_bins]
         scaled = raw_slice * sf
@@ -354,7 +357,7 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         psd[name] = (scaled * scaled / freq_res).tolist()
 
     # Frequency axis: f[k] = k * sample_rate / fft_size
-    freq_hz = [k * _sample_rate / fft_size for k in range(fft_bins)]
+    freq_hz = [k * fft_rate / fft_size for k in range(fft_bins)]
 
     return FFTFrameData(
         device_id=device_id,
