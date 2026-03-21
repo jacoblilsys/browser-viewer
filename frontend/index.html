@@ -14,7 +14,7 @@
 <header class="topbar">
   <img src="/static/logo.gif" alt="Lillie Systems" class="app-logo" />
   <span class="app-title">Lillie System</span>
-  <span class="host-info" id="host-info" title="The IP and TCP port this server is listening on for sensor data">This host (Server): —</span>
+  <span class="host-info" id="host-info" title="The IP, TCP port, and network adapter this server uses for sensor data. Set NETWORK_IF=&lt;ip&gt; env var to force a specific interface.">This host (Server): —</span>
   <div class="topbar-right">
     <button class="settings-btn" id="btn-settings" title="Application settings">&#9881;</button>
   </div>
@@ -97,7 +97,7 @@
         </label>
         <div class="btn-row">
           <button class="btn" id="btn-get-info" title="Query the selected sensor for its device information (firmware version, hardware ID, etc.)">Get Info</button>
-          <button class="btn btn-danger" id="btn-reset" title="Send a reset command to the sensor — the sensor will reboot">Reset</button>
+          <button class="btn btn-danger" id="btn-reset" title="Send a reset command to the sensor — the sensor will reboot">Restart Sensor</button>
         </div>
         <div class="stream-controls">
           <button class="btn stream-btn" id="btn-stream-start" title="Resume streaming decimated data (min/max/last per axis) to the browser at 60 Hz. Low bandwidth, continuous. Does not require a sensor to be selected — controls the backend broadcaster.">Stream ▶</button>

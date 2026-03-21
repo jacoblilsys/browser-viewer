@@ -1442,7 +1442,8 @@ async function _autoBootSensor(device) {
 async function updateHostInfo() {
   try {
     const host = await (await fetch('/api/host')).json();
-    hostInfo.textContent = `This host (Server): ${host.ip}:${host.tcp_port}`;
+    const ifLabel = host.if_name ? ` [${host.if_name}]` : '';
+    hostInfo.textContent = `This host (Server): ${host.ip}:${host.tcp_port}${ifLabel}`;
   } catch {
     hostInfo.textContent = 'This host (Server): unavailable';
   }

@@ -27,11 +27,12 @@ Then open `http://localhost:8000` in a browser.
 
 All settings are via environment variables. Defaults are sensible for typical use.
 
-| Variable   | Default  | Description                                         |
-|------------|----------|-----------------------------------------------------|
-| `TCP_PORT` | `8066`   | TCP port the backend listens on for sensor data     |
-| `LOG_DIR`  | `./logs` | Directory where log files (TSV/HDF5) are written    |
-| `WS_FPS`   | `60`     | WebSocket broadcast rate in frames per second        |
+| Variable     | Default  | Description                                                              |
+|--------------|----------|--------------------------------------------------------------------------|
+| `TCP_PORT`   | `8066`   | TCP port the backend listens on for sensor data                          |
+| `LOG_DIR`    | `./logs` | Directory where log files (TSV/HDF5) are written                         |
+| `WS_FPS`     | `60`     | WebSocket broadcast rate in frames per second                            |
+| `NETWORK_IF` | *(auto)* | Local IP of the network interface to use for sensor UDP/multicast commands. Auto-detected if not set. Set this if sensor API commands time out (e.g. `NETWORK_IF=192.168.0.200`). |
 
 ### Examples
 
@@ -137,3 +138,9 @@ Toggle between formats in the chart toolbar dropdown (while not actively logging
 | POST   | `/api/stream/fft/start` | Start FFT streaming on sensor      |
 | POST   | `/api/stream/fft/stop`  | Stop FFT streaming on sensor       |
 | POST   | `/api/sensor/reset`    | Reset the sensor                    |
+
+## Tips
+If the viewer gets a different network subnet than the sensor is on you can run
+command (windows as admin):
+netsh interface ip add address "Ethernet 2" 192.168.0.200 255.255.255.0
+Where the IP shown is the IP you wish to add to your Ethernet network. 

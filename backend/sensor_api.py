@@ -29,6 +29,7 @@ from protobuf import sensor_cmd_pb2 as _pb
 _UDP_PORT           = 56671
 _MULTICAST_ADDR     = '224.0.0.251'
 _RESPONSE_TIMEOUT_S = 10.0
+_NETWORK_IF         = os.environ.get('NETWORK_IF', '')
 
 # Request header: header_size(4) + mac(6) + req_id(4) + hmac(16) = 30 bytes
 _REQ_HDR_FMT  = '<I6sI16s'
@@ -79,7 +80,9 @@ class SensorApiError(Exception):
 # ── blocking UDP transport (runs in thread pool) ─────────────────────────────
 
 def _get_local_ip() -> str:
-    """Get the machine's LAN IP by connecting to a dummy address."""
+    """Return NETWORK_IF env var if set, otherwise auto-detect via routing table."""
+    if _NETWORK_IF:
+        return _NETWORK_IF
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('192.168.0.1', 1))
@@ -121,12 +124,18 @@ def _send_recv_blocking(
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise SensorApiError(f'Timeout: no response from {target_ip}:{_UDP_PORT}')
+                raise SensorApiError(
+                    f'Timeout: no response from {target_ip}:{_UDP_PORT} '
+                    f'(multicast via {local_ip} — check NETWORK_IF)'
+                )
             sock.settimeout(remaining)
             try:
                 resp_data = sock.recv(4096)
             except socket.timeout:
-                raise SensorApiError(f'Timeout: no response from {target_ip}:{_UDP_PORT}')
+                raise SensorApiError(
+                    f'Timeout: no response from {target_ip}:{_UDP_PORT} '
+                    f'(multicast via {local_ip} — check NETWORK_IF)'
+                )
 
             if len(resp_data) < _RESP_HDR_SIZE:
                 continue

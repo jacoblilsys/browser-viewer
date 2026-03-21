@@ -39,11 +39,14 @@ _TCP_HOST   = '0.0.0.0'
 _TCP_PORT   = int(os.environ.get('TCP_PORT', '8066'))
 _LOG_DIR    = os.environ.get('LOG_DIR', './logs')
 _WS_FPS     = int(os.environ.get('WS_FPS', '60'))
+_NETWORK_IF = os.environ.get('NETWORK_IF', '')
 _FRONTEND   = Path(__file__).parent.parent / 'frontend'
 
 
 def _get_local_ip() -> str:
-    """Get the machine's LAN IP by connecting to a dummy address."""
+    """Return NETWORK_IF env var if set, otherwise auto-detect via routing table."""
+    if _NETWORK_IF:
+        return _NETWORK_IF
     import socket as _sock
     try:
         s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
@@ -53,6 +56,19 @@ def _get_local_ip() -> str:
         return ip
     except Exception:
         return '127.0.0.1'
+
+
+def _get_interface_name(ip: str) -> str:
+    """Return the network adapter name for the given IP address."""
+    try:
+        import ifaddr
+        for adapter in ifaddr.get_adapters():
+            for addr in adapter.ips:
+                if addr.is_IPv4 and addr.ip == ip:
+                    return adapter.nice_name
+    except Exception:
+        pass
+    return ''
 
 # ── global state ─────────────────────────────────────────────────────────────
 
@@ -78,6 +94,15 @@ _stats = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _receiver
+
+    _ip = _get_local_ip()
+    _if = _get_interface_name(_ip)
+    _if_label = f' ({_if})' if _if else ''
+    logging.getLogger('host').info('Network interface: %s%s', _ip, _if_label)
+    if not _NETWORK_IF:
+        logging.getLogger('host').info(
+            'Tip: set NETWORK_IF=<ip> env var to force a specific interface'
+        )
 
     loop = asyncio.get_event_loop()
     _receiver = NetworkReceiver(_TCP_HOST, _TCP_PORT, _queue, loop)
@@ -188,7 +213,8 @@ async def api_devices():
 
 @app.get('/api/host')
 async def api_host():
-    return {'ip': _get_local_ip(), 'tcp_port': _TCP_PORT}
+    ip = _get_local_ip()
+    return {'ip': ip, 'tcp_port': _TCP_PORT, 'if_name': _get_interface_name(ip)}
 
 
 @app.get('/api/status')
