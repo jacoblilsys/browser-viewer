@@ -345,8 +345,11 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
 
     magnitudes: Dict[str, list] = {}
     psd: Dict[str, list] = {}
-    # Use sample rate from FFT header if available, else fall back to _sample_rate
-    fft_rate = fft.actual_frame_rate_hz if fft.actual_frame_rate_hz > 0 else _sample_rate
+    # Prefer _sample_rate from raw FrameData (actual measured rate) over the
+    # FFT header's nominal rate, which firmware may not update correctly.
+    fft_rate = _sample_rate if _sample_rate != 26667.0 else (
+        fft.actual_frame_rate_hz if fft.actual_frame_rate_hz > 0 else _sample_rate
+    )
     # PSD normalisation: freq_resolution = fs / fft_size
     freq_res = fft_rate / fft_size  # Hz per bin
     for i, (name, sf) in enumerate(zip(axis_names, scale_factors)):
