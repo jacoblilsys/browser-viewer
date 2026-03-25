@@ -181,11 +181,13 @@ def _send_command(target_ip, mac_str, password, local_ip, **config_kwargs):
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
                     socket.inet_aton('224.0.0.251') + local_if)
     sock.settimeout(_TIMEOUT)
-    sock.bind(('', 0))
+    sock.bind((local_ip, 0))
 
     try:
+        bound_addr = sock.getsockname()
+        print(f'  Socket bound to {bound_addr[0]}:{bound_addr[1]}')
         sock.sendto(data, (target_ip, _UDP_PORT))
-        print(f'  Command sent to {target_ip}:{_UDP_PORT} via {local_ip}')
+        print(f'  Command sent to {target_ip}:{_UDP_PORT} via {local_ip} ({len(data)} bytes)')
 
         deadline = time.monotonic() + _TIMEOUT
         while True:
