@@ -136,32 +136,39 @@ def _build_request(payload, mac_str, password):
     return header + payload, req_id
 
 
+def _pack_ip(ip_str):
+    """Convert dotted IP string to big-endian uint32."""
+    return struct.unpack('>I', socket.inet_aton(ip_str))[0]
+
+
 def _send_command(target_ip, mac_str, password, local_ip, **config_kwargs):
     """Build and send a network config set command."""
-    req = _pb.Request(msg_version=1)
+    nc = _pb.NetworkConfigV4()
 
     for key, val in config_kwargs.items():
         if val is None:
             continue
         if key == 'dhcp':
-            req.network_config.dhcp = getattr(_pb, val)
+            nc.dhcp = _pb.FeatureToggle.Value(val)
         elif key == 'data_stream':
-            req.network_config.data_stream = getattr(_pb, val)
+            nc.data_stream = _pb.FeatureToggle.Value(val)
         elif key == 'fft_stream':
-            req.network_config.fft_stream = getattr(_pb, val)
+            nc.fft_stream = _pb.FeatureToggle.Value(val)
         elif key == 'ip':
-            req.network_config.ip = val
+            nc.ip = _pack_ip(val)
         elif key == 'netmask':
-            req.network_config.netmask = val
+            nc.netmask = _pack_ip(val)
         elif key == 'gateway':
-            req.network_config.gateway = val
+            nc.gateway = _pack_ip(val)
         elif key == 'server_ip':
-            req.network_config.server_ip = val
+            nc.server_ip = _pack_ip(val)
         elif key == 'server_port':
-            req.network_config.server_port = int(val)
+            nc.server_port = int(val)
         elif key == 'ntp_server_ip':
-            req.network_config.ntp_server_ip = val
+            nc.ntp_server_ip = _pack_ip(val)
 
+    req = _pb.Request(msg_version=1)
+    req.set_network_config.CopyFrom(nc)
     payload = req.SerializeToString()
     data, req_id = _build_request(payload, mac_str, password)
 
