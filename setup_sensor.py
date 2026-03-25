@@ -24,6 +24,9 @@ Examples:
     # Specify network interface explicitly:
     sudo ~/venv-browser-viewer/bin/python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --dhcp --iface eth0
 
+macOS (requires sudo, uses ifconfig):
+    sudo ~/venv-browser-viewer/bin/python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --dhcp
+
 Windows (run as Administrator):
     python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --dhcp
 """
@@ -51,15 +54,14 @@ from protobuf import sensor_cmd_pb2 as _pb
 _UDP_PORT = 56671
 _TIMEOUT  = 10.0
 _LINK_LOCAL_TEMP_IP = '169.254.99.1'
-_IS_WINDOWS = platform.system() == 'Windows'
+_PLATFORM = platform.system()  # 'Linux', 'Windows', 'Darwin'
 
 
 # ── network helpers ──────────────────────────────────────────────────────────
 
 def _detect_interface():
     """Auto-detect the primary network interface name."""
-    if _IS_WINDOWS:
-        # On Windows, netsh needs the interface name
+    if _PLATFORM == 'Windows':
         out = subprocess.check_output(
             ['netsh', 'interface', 'ipv4', 'show', 'interfaces'],
             text=True, timeout=5
@@ -69,14 +71,13 @@ def _detect_interface():
             if len(parts) >= 4 and parts[-2] == 'connected':
                 return ' '.join(parts[3:])
         return 'Ethernet'
+    elif _PLATFORM == 'Darwin':
+        # macOS: parse default route for interface name
+        out = subprocess.check_output(['route', '-n', 'get', 'default'], text=True, timeout=5)
+        m = re.search(r'interface:\s*(\S+)', out)
+        return m.group(1) if m else 'en0'
     else:
-        # Linux: find interface with a non-loopback IP
-        out = subprocess.check_output(['ip', '-4', 'addr', 'show'], text=True, timeout=5)
-        for line in out.split('\n'):
-            if 'inet ' in line and '127.0.0.1' not in line:
-                # Extract interface name from the section header above
-                pass
-        # Simpler: use ip route
+        # Linux
         out = subprocess.check_output(['ip', 'route', 'show', 'default'], text=True, timeout=5)
         m = re.search(r'dev\s+(\S+)', out)
         return m.group(1) if m else 'eth0'
@@ -85,10 +86,15 @@ def _detect_interface():
 def _add_link_local_ip(iface, ip='169.254.99.1'):
     """Add a temporary link-local IP address to the interface."""
     print(f'  Adding {ip}/16 to {iface}...')
-    if _IS_WINDOWS:
+    if _PLATFORM == 'Windows':
         subprocess.check_call(
             ['netsh', 'interface', 'ip', 'add', 'address', iface, ip, '255.255.0.0'],
             timeout=10
+        )
+    elif _PLATFORM == 'Darwin':
+        subprocess.check_call(
+            ['ifconfig', iface, 'alias', ip, '255.255.0.0'],
+            timeout=5
         )
     else:
         subprocess.check_call(['ip', 'addr', 'add', f'{ip}/16', 'dev', iface], timeout=5)
@@ -99,10 +105,15 @@ def _remove_link_local_ip(iface, ip='169.254.99.1'):
     """Remove the temporary link-local IP address."""
     print(f'  Removing {ip}/16 from {iface}...')
     try:
-        if _IS_WINDOWS:
+        if _PLATFORM == 'Windows':
             subprocess.check_call(
                 ['netsh', 'interface', 'ip', 'delete', 'address', iface, ip],
                 timeout=10
+            )
+        elif _PLATFORM == 'Darwin':
+            subprocess.check_call(
+                ['ifconfig', iface, '-alias', ip],
+                timeout=5
             )
         else:
             subprocess.check_call(['ip', 'addr', 'del', f'{ip}/16', 'dev', iface], timeout=5)
