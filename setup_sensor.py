@@ -6,21 +6,23 @@ Temporarily adds a link-local IP to your network interface, sends the configurat
 command to the sensor, then removes the temporary IP. The main viewer app does not
 need to be stopped.
 
-Usage (Linux, requires sudo):
-    sudo python setup_sensor.py <sensor_ip> <sensor_mac> [options]
+Requires the same Python virtual environment as the backend (for protobuf).
+
+Usage (Linux, requires sudo — use the venv python directly):
+    sudo ~/venv-browser-viewer/bin/python setup_sensor.py <sensor_ip> <sensor_mac> [options]
 
 Examples:
     # Enable DHCP on a link-local sensor:
-    sudo python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --dhcp
+    sudo ~/venv-browser-viewer/bin/python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --dhcp
 
     # Set a static IP:
-    sudo python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --ip 192.168.0.50
+    sudo ~/venv-browser-viewer/bin/python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --ip 192.168.0.50
 
     # Set server address + enable DHCP (server auto-detected):
-    sudo python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --dhcp --server-ip 192.168.0.124
+    sudo ~/venv-browser-viewer/bin/python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --dhcp --server-ip 192.168.0.124
 
     # Specify network interface explicitly:
-    sudo python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --dhcp --iface eth0
+    sudo ~/venv-browser-viewer/bin/python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --dhcp --iface eth0
 
 Windows (run as Administrator):
     python setup_sensor.py 169.254.2.58 aa:bb:cc:dd:ee:ff --dhcp

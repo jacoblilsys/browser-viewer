@@ -1332,7 +1332,7 @@ function _updateRescueCmd() {
     args += ' --dhcp';
   }
 
-  const prefix = navigator.platform.startsWith('Win') ? 'python' : 'sudo python3';
+  const prefix = navigator.platform.startsWith('Win') ? 'python' : 'sudo ~/venv-browser-viewer/bin/python';
   document.getElementById('setup-cmd').textContent = `${prefix} setup_sensor.py ${args}`;
 }
 
