@@ -1281,18 +1281,27 @@ async function _showSetupModal(device) {
   const isLinkLocal = ip.startsWith('169.254.');
   const sameSubnet = _isSameSubnet(ip, host.ip, '255.255.255.0');
 
+  const rescue = document.getElementById('setup-rescue');
+
   if (isLinkLocal) {
     warning.hidden = false;
     warning.textContent =
       'This sensor has a link-local IP (169.254.x.x) which means it has no network config. ' +
-      'You should either enable DHCP or set a static IP on the same subnet as this server.';
+      'You should either enable DHCP or set a static IP on the same subnet as this server. ' +
+      'Use the rescue command below — Apply Setup will not work from this subnet.';
+    rescue.hidden = false;
+    _updateRescueCmd();
   } else if (!sameSubnet) {
     warning.hidden = false;
     warning.textContent =
       `This sensor (${ip}) may not be on the same subnet as this server (${host.ip}). ` +
-      'After applying, the sensor may become unreachable. Consider setting a static IP on the same subnet or enabling DHCP.';
+      'After applying, the sensor may become unreachable. Consider setting a static IP on the same subnet or enabling DHCP. ' +
+      'Or use the rescue command below.';
+    rescue.hidden = false;
+    _updateRescueCmd();
   } else {
     warning.hidden = true;
+    rescue.hidden = true;
   }
 
   // Reset radio to "keep"
@@ -1302,11 +1311,52 @@ async function _showSetupModal(device) {
   setupOverlay.hidden = false;
 }
 
+function _updateRescueCmd() {
+  if (!_setupPending) return;
+  const { device, host } = _setupPending;
+  const mode = document.querySelector('input[name="setup-ip-mode"]:checked');
+  const modeVal = mode ? mode.value : 'dhcp';
+  const pw = inPw.value;
+
+  let args = `${device.ip} ${device.mac}`;
+  if (pw) args += ` -p "${pw}"`;
+  args += ` --server-ip ${host.ip} --server-port ${host.tcp_port}`;
+
+  if (modeVal === 'dhcp') {
+    args += ' --dhcp';
+  } else if (modeVal === 'static') {
+    const staticIp = document.getElementById('setup-static-ip').value.trim() || '192.168.0.50';
+    args += ` --ip ${staticIp}`;
+  } else {
+    // "keep" — default to dhcp for rescue
+    args += ' --dhcp';
+  }
+
+  const prefix = navigator.platform.startsWith('Win') ? 'python' : 'sudo python3';
+  document.getElementById('setup-cmd').textContent = `${prefix} setup_sensor.py ${args}`;
+}
+
 function _isSameSubnet(ip1, ip2, mask) {
   const toNum = (ip) => ip.split('.').reduce((a, b) => (a << 8) | Number(b), 0) >>> 0;
   const m = toNum(mask);
   return (toNum(ip1) & m) === (toNum(ip2) & m);
 }
+
+// Update rescue command when IP mode or static IP changes
+document.querySelectorAll('input[name="setup-ip-mode"]').forEach(r => {
+  r.addEventListener('change', _updateRescueCmd);
+});
+document.getElementById('setup-static-ip').addEventListener('input', _updateRescueCmd);
+
+// Copy rescue command to clipboard
+document.getElementById('btn-copy-cmd').addEventListener('click', () => {
+  const cmd = document.getElementById('setup-cmd').textContent;
+  navigator.clipboard.writeText(cmd).then(() => {
+    const btn = document.getElementById('btn-copy-cmd');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  });
+});
 
 document.getElementById('btn-setup-confirm').addEventListener('click', async () => {
   if (!_setupPending) return;

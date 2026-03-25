@@ -505,6 +505,49 @@ body.light .setup-warning {
   padding: .5rem 1rem;
 }
 
+/* ── rescue command box ──────────────────────────────────────────────────── */
+.setup-rescue {
+  margin-top: .5rem;
+  margin-bottom: .5rem;
+  padding: .6rem .8rem;
+  background: #1a2a40;
+  border: 1px solid #2a4a6a;
+  border-radius: var(--radius);
+}
+body.light .setup-rescue {
+  background: #e8f0fa;
+  border-color: #a0b8d0;
+}
+.setup-rescue[hidden] { display: none; }
+.setup-rescue-text {
+  font-size: 1rem;
+  color: var(--text);
+  margin-bottom: .5rem;
+  line-height: 1.4;
+}
+body.light .setup-rescue-text { color: #1a1a2e; }
+.setup-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+}
+.setup-cmd {
+  flex: 1;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: .95rem;
+  background: #0a1520;
+  color: #8fd8a0;
+  padding: .4rem .6rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: nowrap;
+  user-select: all;
+}
+body.light .setup-cmd {
+  background: #1a2a3e;
+  color: #a0e8b0;
+}
+
 /* ── sidebar details / cards ────────────────────────────────────────────────── */
 details { border-bottom: 1px solid var(--border); }
 

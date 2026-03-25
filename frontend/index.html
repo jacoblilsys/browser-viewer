@@ -278,6 +278,18 @@
         </label>
       </div>
     </div>
+    <div class="setup-rescue" id="setup-rescue" hidden>
+      <div class="setup-heading">Rescue: sensor on a different subnet</div>
+      <div class="setup-rescue-text">
+        This sensor cannot be reached from the current network. Use the standalone setup tool
+        to temporarily bridge the network gap. Run the command below in a terminal
+        (requires root/admin). The viewer does not need to be restarted.
+      </div>
+      <div class="setup-cmd-row">
+        <code class="setup-cmd" id="setup-cmd">—</code>
+        <button class="btn btn-sm" id="btn-copy-cmd" title="Copy command to clipboard">Copy</button>
+      </div>
+    </div>
     <div class="btn-row" style="margin-top:.5rem">
       <button class="btn btn-primary" id="btn-setup-confirm" title="Send all configuration to the sensor">Apply Setup</button>
       <button class="btn" id="btn-setup-cancel" title="Cancel without sending anything">Cancel</button>
