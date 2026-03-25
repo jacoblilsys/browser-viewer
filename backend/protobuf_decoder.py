@@ -224,11 +224,11 @@ def decode_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | None':
             exp    = md.si_unit_scaling_base10_exp
             unit   = _UNIT_STR.get(md.data_unit, f'unit#{md.data_unit}')
             trafo  = Transformation.Name(md.transformation)
-            _log.info('  col[%d] %-20s  dtype=%s%d  unit=%-12s  '
-                      'factor=%s  exp=%d  trafo=%s',
-                      i, _col_label(md),
-                      _NUMPY_KIND.get(md.data_numpy_type, '?'), md.data_numpy_bytes,
-                      unit, factor, exp, trafo)
+            _log.debug('  col[%d] %-20s  dtype=%s%d  unit=%-12s  '
+                       'factor=%s  exp=%d  trafo=%s',
+                       i, _col_label(md),
+                       _NUMPY_KIND.get(md.data_numpy_type, '?'), md.data_numpy_bytes,
+                       unit, factor, exp, trafo)
 
     # Decode columns
     columns:      Dict[str, np.ndarray] = {}
@@ -254,8 +254,8 @@ def decode_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | None':
 
         # Log raw vs scaled for first frame of each new stream
         if _is_new_stream and md.data_type == DataType.DATA_TYPE_ACCELERATION and len(raw) > 0:
-            _log.info('  %s  raw[0]=%.1f  scaled[0]=%.6f  factor=%.6e',
-                      label, raw[0], arr[0], sf)
+            _log.debug('  %s  raw[0]=%.1f  scaled[0]=%.6f  factor=%.6e',
+                       label, raw[0], arr[0], sf)
         count = label_counts.get(label, 0)
         label_counts[label] = count + 1
         if count > 0:
