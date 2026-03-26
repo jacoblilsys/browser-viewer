@@ -120,60 +120,60 @@
       <div class="card">
         <label title="Accelerometer full scale range. Higher values allow measuring stronger vibrations but with less resolution.">Full scale
           <select id="cfg-fs">
-            <option>ACCEL_FS_2G</option>
-            <option>ACCEL_FS_4G</option>
-            <option>ACCEL_FS_8G</option>
-            <option>ACCEL_FS_16G</option>
+            <option value="ACCEL_FS_2G">±2 G</option>
+            <option value="ACCEL_FS_4G">±4 G</option>
+            <option value="ACCEL_FS_8G">±8 G</option>
+            <option value="ACCEL_FS_16G">±16 G</option>
           </select>
         </label>
         <label title="Which accelerometer axes to stream. Fewer axes = less bandwidth.">Axes
           <select id="cfg-axes">
-            <option>AXIS_XYZ</option>
-            <option>AXIS_X</option>
-            <option>AXIS_Y</option>
-            <option>AXIS_Z</option>
-            <option>AXIS_XY</option>
-            <option>AXIS_XZ</option>
-            <option>AXIS_YZ</option>
+            <option value="AXIS_XYZ">X + Y + Z</option>
+            <option value="AXIS_X">X only</option>
+            <option value="AXIS_Y">Y only</option>
+            <option value="AXIS_Z">Z only</option>
+            <option value="AXIS_XY">X + Y</option>
+            <option value="AXIS_XZ">X + Z</option>
+            <option value="AXIS_YZ">Y + Z</option>
           </select>
         </label>
         <label title="Output Data Rate divisor. DIV_1 = full 26.7 kHz, DIV_2 = 13.3 kHz, DIV_4 = 6.7 kHz, etc. Lower rate = less data, lower frequency range.">ODR divisor
           <select id="cfg-odr">
-            <option>ODR_DIV_1</option>
-            <option>ODR_DIV_2</option>
-            <option>ODR_DIV_4</option>
-            <option>ODR_DIV_8</option>
-            <option>ODR_DIV_16</option>
-            <option>ODR_DIV_32</option>
-            <option>ODR_DIV_64</option>
-            <option>ODR_DIV_128</option>
-            <option>ODR_DIV_256</option>
+            <option value="ODR_DIV_1">÷1 (26.7 kHz)</option>
+            <option value="ODR_DIV_2">÷2 (13.3 kHz)</option>
+            <option value="ODR_DIV_4">÷4 (6.7 kHz)</option>
+            <option value="ODR_DIV_8">÷8 (3.3 kHz)</option>
+            <option value="ODR_DIV_16">÷16 (1.7 kHz)</option>
+            <option value="ODR_DIV_32">÷32 (833 Hz)</option>
+            <option value="ODR_DIV_64">÷64 (417 Hz)</option>
+            <option value="ODR_DIV_128">÷128 (208 Hz)</option>
+            <option value="ODR_DIV_256">÷256 (104 Hz)</option>
           </select>
         </label>
         <label title="Digital filter applied to the accelerometer data before streaming.">Filter
           <select id="cfg-filt">
-            <option>FILTER_NONE</option>
-            <option>FILTER_LOW_PASS2</option>
-            <option>FILTER_HIGH_PASS</option>
-            <option>FILTER_SLOPE_FILTER</option>
+            <option value="FILTER_NONE">None</option>
+            <option value="FILTER_LOW_PASS2">Low-pass (2nd order)</option>
+            <option value="FILTER_HIGH_PASS">High-pass</option>
+            <option value="FILTER_SLOPE_FILTER">Slope filter</option>
           </select>
         </label>
         <label title="Filter cutoff frequency. Only applies when a filter is enabled.">Cutoff
           <select id="cfg-cutoff">
-            <option>CUTOFF_6p66_KHZ</option>
-            <option>CUTOFF_2p66_KHZ</option>
-            <option>CUTOFF_1p33_KHZ</option>
-            <option>CUTOFF_0p59_KHZ</option>
-            <option>CUTOFF_0p26_KHZ</option>
-            <option>CUTOFF_NONE</option>
+            <option value="CUTOFF_6p66_KHZ">6.66 kHz</option>
+            <option value="CUTOFF_2p66_KHZ">2.66 kHz</option>
+            <option value="CUTOFF_1p33_KHZ">1.33 kHz</option>
+            <option value="CUTOFF_0p59_KHZ">590 Hz</option>
+            <option value="CUTOFF_0p26_KHZ">260 Hz</option>
+            <option value="CUTOFF_NONE">None</option>
           </select>
         </label>
         <label title="FFT window size computed on the sensor. Larger = better frequency resolution but slower update rate. 256 bins at 26.7 kHz updates ~208 times/sec, 2048 bins ~26 times/sec.">FFT Size
           <select id="cfg-fft-size">
-            <option>FFT_SIZE_256</option>
-            <option>FFT_SIZE_512</option>
-            <option>FFT_SIZE_1024</option>
-            <option>FFT_SIZE_2048</option>
+            <option value="FFT_SIZE_256">256</option>
+            <option value="FFT_SIZE_512">512</option>
+            <option value="FFT_SIZE_1024">1024</option>
+            <option value="FFT_SIZE_2048">2048</option>
           </select>
         </label>
         <div class="btn-row">
