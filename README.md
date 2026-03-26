@@ -8,6 +8,8 @@ Receives protobuf-framed acceleration data over TCP, displays live waveforms and
 
 Protocol definitions: [lillie-protobuf](https://github.com/jacoblilsys/lillie-protobuf)
 
+![Sensor Viewer — FFT, raw waveform burst capture, and spectrograms](frontend/screenshot_fft512bin_1s_sweep_5s_burst_capture_raw_data_fft_spectograms.jpg)
+
 ## Requirements
 
 - Python 3.10+
