@@ -316,15 +316,7 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
                   device_id, stream_uid, fft_size, fft_bins,
                   fft.actual_frame_rate_hz, len(fft.meta_data))
 
-    # Parse 3 x fft_bins int16 magnitudes from raw payload
-    expected = 3 * fft_bins * 2
-    if len(raw_payload) < expected:
-        _log.warning('FFT payload too short: %d < %d', len(raw_payload), expected)
-        return None
-
-    all_mags = np.frombuffer(raw_payload[:expected], dtype='<i2').astype(np.float64)
-
-    # Build per-axis scaling from MetaData, apply fft_size * float_factor * 10^exp
+    # Build per-axis scaling from MetaData
     # Map axis from MetaData.data_axis → 'x'/'y'/'z'
     axis_names = []
     scale_factors = []
@@ -338,10 +330,16 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         if u:
             unit = u
 
-    # Fallback if meta_data has fewer than 3 entries
-    while len(axis_names) < 3:
-        axis_names.append(['x', 'y', 'z'][len(axis_names)])
-        scale_factors.append(scale_factors[-1] if scale_factors else 1.0)
+    num_axes = len(axis_names) or 1
+
+    # Parse num_axes x fft_bins int16 magnitudes from raw payload
+    expected = num_axes * fft_bins * 2
+    if len(raw_payload) < expected:
+        _log.warning('FFT payload too short: %d < %d (%d axes × %d bins)',
+                     len(raw_payload), expected, num_axes, fft_bins)
+        return None
+
+    all_mags = np.frombuffer(raw_payload[:expected], dtype='<i2').astype(np.float64)
 
     magnitudes: Dict[str, list] = {}
     psd: Dict[str, list] = {}
