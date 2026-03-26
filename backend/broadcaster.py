@@ -27,7 +27,9 @@ class Broadcaster:
         self._stream_key: tuple = ()   # (device_id, stream_uid)
         self._units: Dict[str, str] = {}
         self._fps = fps
+        self._max_fps = fps
         self._interval = 1.0 / fps
+        self._min_samples_per_emit = 50  # accumulate at least this many before sending
         self._lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
 
@@ -99,6 +101,11 @@ class Broadcaster:
                 self._stream_key = new_key
             self._last_frame = frame
             self._units.update(frame.units)
+            # Adapt broadcast rate to sample rate
+            if frame.sample_rate_hz > 0:
+                ideal_fps = frame.sample_rate_hz / self._min_samples_per_emit
+                new_fps = max(1.0, min(ideal_fps, self._max_fps))
+                self._interval = 1.0 / new_fps
             for label, arr in frame.columns.items():
                 if label not in self._buffers:
                     self._buffers[label] = deque()
