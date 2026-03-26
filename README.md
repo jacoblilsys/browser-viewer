@@ -1,6 +1,12 @@
 # Browser Viewer
 
-Real-time browser-based vibration sensor viewer. Receives protobuf-framed acceleration data over TCP, displays live waveforms and FFT/PSD spectra, and provides sensor configuration via a web UI.
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Real-time browser-based vibration sensor viewer for the [A2E-TRI Accelerometer](https://lilliesystems.com/products/a2e-tri/) from [Lillie Systems](https://lilliesystems.com).
+
+Receives protobuf-framed acceleration data over TCP, displays live waveforms and FFT/PSD spectra, and provides sensor configuration via a web UI.
+
+Protocol definitions: [lillie-protobuf](https://github.com/jacoblilsys/lillie-protobuf)
 
 ## Requirements
 

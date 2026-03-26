@@ -3,4 +3,11 @@ __pycache__/
 venv/
 logs/
 *.log
+*.h5
+*.tmp
 .env
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
