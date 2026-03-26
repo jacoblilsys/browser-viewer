@@ -706,39 +706,61 @@ function connect() {
 }
 
 function handleFrame(msg) {
-  const axes = msg.axes || {};
-
   if (msg.stream_uid !== undefined && msg.stream_uid !== _streamUid) {
     _streamUid = msg.stream_uid;
     for (const k of Object.keys(ring)) ring[k] = [];
   }
 
-  if (Object.keys(axes).length === 0) return;
+  if (msg.rate_hz) {
+    _rateHz = msg.rate_hz;
+    lblRate.textContent = _rateHz >= 1000
+      ? `${(_rateHz / 1000).toFixed(1)} kHz`
+      : `${Math.round(_rateHz)} Hz`;
+  }
 
-  const tSec = msg.t_end_ns / 1e9;
-  const get = (label, key) => {
-    const a = axes[label];
-    return (a && key in a) ? a[key] : null;
-  };
+  // Raw samples mode (low ODR — all samples forwarded)
+  if (msg.raw_samples) {
+    const rs = msg.raw_samples;
+    const x = rs['accel_x'] || [];
+    const y = rs['accel_y'] || [];
+    const z = rs['accel_z'] || [];
+    const n = Math.max(x.length, y.length, z.length);
+    if (n === 0) return;
 
-  const xLast = get('accel_x', 'last');
-  const yLast = get('accel_y', 'last');
-  const zLast = get('accel_z', 'last');
+    const tEnd = msg.t_end_ns / 1e9;
+    const rate = msg.rate_hz || _rateHz || 1;
+    const tStart = tEnd - (n - 1) / rate;
+    for (let i = 0; i < n; i++) {
+      ring.t.push(tStart + i / rate);
+      ring.x_last.push(x[i] ?? null);
+      ring.y_last.push(y[i] ?? null);
+      ring.z_last.push(z[i] ?? null);
+    }
+  } else {
+    // Decimated mode (high ODR — min/max/last envelope)
+    const axes = msg.axes || {};
+    if (Object.keys(axes).length === 0) return;
 
-  if (xLast === null && yLast === null && zLast === null) return;
+    const tSec = msg.t_end_ns / 1e9;
+    const get = (label, key) => {
+      const a = axes[label];
+      return (a && key in a) ? a[key] : null;
+    };
 
-  ring.t.push(tSec);
-  ring.x_last.push(xLast);
-  ring.y_last.push(yLast);
-  ring.z_last.push(zLast);
+    const xLast = get('accel_x', 'last');
+    const yLast = get('accel_y', 'last');
+    const zLast = get('accel_z', 'last');
+
+    if (xLast === null && yLast === null && zLast === null) return;
+
+    ring.t.push(tSec);
+    ring.x_last.push(xLast);
+    ring.y_last.push(yLast);
+    ring.z_last.push(zLast);
+  }
 
   while (ring.t.length > MAX_PTS) {
     for (const k of Object.keys(ring)) ring[k].shift();
-  }
-
-  if (msg.rate_hz) {
-    _rateHz = msg.rate_hz;
-    lblRate.textContent = `${(msg.rate_hz / 1000).toFixed(1)} kHz`;
   }
 
   // Update all raw windows

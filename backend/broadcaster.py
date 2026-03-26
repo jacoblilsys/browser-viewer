@@ -195,28 +195,39 @@ class Broadcaster:
         if self._paused:
             return  # drain buffers but don't send
 
-        # Build per-axis envelope
-        axes_data: Dict[str, dict] = {}
-        for label, samples in snapshot.items():
-            if not samples:
-                continue
-            mn = float(min(samples))
-            mx = float(max(samples))
-            last = float(samples[-1])
-            axes_data[label] = {'min': mn, 'max': mx, 'last': last, 'n': len(samples)}
-
         t_end_ns   = frame.recv_time_ns  if frame else 0
         rate_hz    = frame.sample_rate_hz if frame else 0.0
         stream_uid = frame.stream_uid     if frame else 0
 
-        msg = json.dumps({
-            'type':       'frame',
-            't_end_ns':   t_end_ns,
-            'rate_hz':    rate_hz,
-            'stream_uid': stream_uid,
-            'axes':       axes_data,
-            'units':      dict(self._units),
-        })
+        # At low sample rates, send all raw samples instead of decimating
+        if rate_hz > 0 and rate_hz < 1000:
+            msg = json.dumps({
+                'type':        'frame',
+                't_end_ns':    t_end_ns,
+                'rate_hz':     rate_hz,
+                'stream_uid':  stream_uid,
+                'raw_samples': snapshot,
+                'units':       dict(self._units),
+            })
+        else:
+            # Build per-axis envelope (decimated)
+            axes_data: Dict[str, dict] = {}
+            for label, samples in snapshot.items():
+                if not samples:
+                    continue
+                mn = float(min(samples))
+                mx = float(max(samples))
+                last = float(samples[-1])
+                axes_data[label] = {'min': mn, 'max': mx, 'last': last, 'n': len(samples)}
+
+            msg = json.dumps({
+                'type':       'frame',
+                't_end_ns':   t_end_ns,
+                'rate_hz':    rate_hz,
+                'stream_uid': stream_uid,
+                'axes':       axes_data,
+                'units':      dict(self._units),
+            })
 
         await self._broadcast(msg)
 
