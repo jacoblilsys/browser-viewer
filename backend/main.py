@@ -98,9 +98,11 @@ async def lifespan(app: FastAPI):
     _ip = _get_local_ip()
     _if = _get_interface_name(_ip)
     _if_label = f' ({_if})' if _if else ''
-    logging.getLogger('host').info('Network interface: %s%s', _ip, _if_label)
+    _log_host = logging.getLogger('host')
+    _log_host.info('Network interface: %s%s', _ip, _if_label)
+    _log_host.info('Sensor TCP port: %d', _TCP_PORT)
     if not _NETWORK_IF:
-        logging.getLogger('host').info(
+        _log_host.info(
             'Tip: set NETWORK_IF=<ip> env var to force a specific interface'
         )
 
@@ -112,6 +114,17 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_drain_queue())
     asyncio.create_task(_status_heartbeat())
+
+    # Print the browser URL prominently
+    _http_port = int(os.environ.get('PORT', os.environ.get('UVICORN_PORT', '8000')))
+    _url = f'http://{_ip}:{_http_port}'
+    _line = f'  Open in browser:  {_url}'
+    _w = len(_line) + 2
+    print()
+    print(f'  ┌{"─" * _w}┐')
+    print(f'  │{_line}  │')
+    print(f'  └{"─" * _w}┘')
+    print()
 
     yield
 
