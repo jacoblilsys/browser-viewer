@@ -207,7 +207,10 @@
         <label title="Default gateway for the sensor.">Gateway      <input type="text" id="net-gw"  /></label>
         <label title="IP address of the server that the sensor sends data to (this machine).">Server IP    <input type="text" id="net-server-ip" /></label>
         <label title="TCP port on the server that the sensor connects to (default 8066).">Server Port  <input type="text" id="net-server-port" /></label>
-        <label title="NTP server address for time synchronization. Typically set to the same machine as the data server.">NTP Server   <input type="text" id="net-ntp-ip" /></label>
+        <label title="NTP server address for time synchronization. Typically set to the same machine as the data server. Standard NTP port 123 is used.">NTP Server   <input type="text" id="net-ntp-ip" /></label>
+        <label title="How often the sensor polls the NTP server for time sync, in seconds. Lower values = more frequent sync but more network traffic.">NTP Interval (s)  <input type="text" id="net-ntp-interval" placeholder="e.g. 60" /></label>
+        <label title="Manual time offset applied after NTP sync, in microseconds. Use to compensate for known fixed delays.">NTP Offset (us)  <input type="text" id="net-ntp-offset" placeholder="e.g. 0" /></label>
+        <label title="Minimum NTP time error in milliseconds before the sensor performs an NTP update. Prevents unnecessary corrections for small drifts.">NTP Min Error (ms)  <input type="text" id="net-ntp-min-error" placeholder="e.g. 10" /></label>
         <label title="Enable or disable DHCP on the sensor. When enabled, the sensor gets its IP from the router automatically.">DHCP
           <select id="net-dhcp">
             <option>FEATURE_DISABLED</option>

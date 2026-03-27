@@ -318,6 +318,9 @@ class NetworkConfigPayload(SensorTarget):
     server_ip:     Optional[str] = None
     server_port:   Optional[int] = None
     ntp_server_ip: Optional[str] = None
+    ntp_interval_s: Optional[int] = None
+    ntp_offset_us:  Optional[int] = None
+    ntp_min_ms_error_to_update: Optional[int] = None
     dhcp:          Optional[str] = None
     data_stream:   Optional[str] = None
     fft_stream:    Optional[str] = None

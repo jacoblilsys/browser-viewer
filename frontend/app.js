@@ -1251,6 +1251,9 @@ document.getElementById('btn-get-net').addEventListener('click', async () => {
     document.getElementById('net-server-ip').value    = d.server_ip    || '';
     document.getElementById('net-server-port').value  = d.server_port  ?? '';
     document.getElementById('net-ntp-ip').value       = d.ntp_server_ip || '';
+    document.getElementById('net-ntp-interval').value = d.ntp_interval_s ?? '';
+    document.getElementById('net-ntp-offset').value   = d.ntp_offset_us ?? '';
+    document.getElementById('net-ntp-min-error').value = d.ntp_min_ms_error_to_update ?? '';
     document.getElementById('net-dhcp').value         = d.dhcp         || 'FEATURE_DISABLED';
     document.getElementById('net-stream').value       = d.data_stream  || 'FEATURE_DISABLED';
     if (d.fft_stream) document.getElementById('net-fft-stream').value = d.fft_stream;
@@ -1266,6 +1269,9 @@ document.getElementById('btn-set-net').addEventListener('click', async () => {
     server_ip:   document.getElementById('net-server-ip').value   || null,
     server_port: port ? Number(port) : null,
     ntp_server_ip: document.getElementById('net-ntp-ip').value    || null,
+    ntp_interval_s: document.getElementById('net-ntp-interval').value ? Number(document.getElementById('net-ntp-interval').value) : null,
+    ntp_offset_us:  document.getElementById('net-ntp-offset').value ? Number(document.getElementById('net-ntp-offset').value) : null,
+    ntp_min_ms_error_to_update: document.getElementById('net-ntp-min-error').value ? Number(document.getElementById('net-ntp-min-error').value) : null,
     dhcp:        document.getElementById('net-dhcp').value        || null,
     data_stream: document.getElementById('net-stream').value      || null,
     fft_stream:  document.getElementById('net-fft-stream').value  || null,

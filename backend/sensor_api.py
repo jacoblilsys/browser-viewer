@@ -249,6 +249,9 @@ async def get_network_config(target_ip: str, mac: str, password: str) -> dict:
         'server_ip':    _ip(nc.server_ip),
         'server_port':  nc.server_port,
         'ntp_server_ip': _ip(nc.ntp_server_ip),
+        'ntp_interval_s': nc.ntp_interval_s,
+        'ntp_offset_us':  nc.ntp_offset_us if nc.has_ntp_offset_us else None,
+        'ntp_min_ms_error_to_update': nc.ntp_min_ms_error_to_update if nc.has_ntp_min_ms_error_to_update else None,
         'dhcp':         _pb.FeatureToggle.Name(nc.dhcp),
         'data_stream':  _pb.FeatureToggle.Name(nc.data_stream),
         'fft_stream':   _pb.FeatureToggle.Name(nc.fft_stream),
@@ -276,6 +279,14 @@ async def set_network_config(target_ip: str, mac: str, password: str, **kwargs):
             nc.server_port = int(v)
         elif k == 'ntp_server_ip':
             nc.ntp_server_ip = _pack_ip(v)
+        elif k == 'ntp_interval_s':
+            nc.ntp_interval_s = int(v)
+        elif k == 'ntp_offset_us':
+            nc.ntp_offset_us = int(v)
+            nc.has_ntp_offset_us = True
+        elif k == 'ntp_min_ms_error_to_update':
+            nc.ntp_min_ms_error_to_update = int(v)
+            nc.has_ntp_min_ms_error_to_update = True
         elif k == 'dhcp':
             nc.dhcp = _pb.FeatureToggle.Value(v)
         elif k == 'data_stream':
