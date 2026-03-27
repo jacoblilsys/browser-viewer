@@ -296,6 +296,32 @@ body.light .chart-window.focused {
   overflow: hidden;
 }
 
+/* ── time sync window ─────────────────────────────────────────────────────── */
+.timesync-info {
+  padding: .4rem .6rem;
+  font-size: .88rem;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+  flex-shrink: 0;
+  background: var(--card);
+}
+.timesync-info .ts-label {
+  color: var(--muted);
+  display: inline-block;
+  min-width: 7rem;
+}
+.timesync-info .ts-value {
+  color: var(--text);
+  font-weight: 600;
+}
+.timesync-graph {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* ── scrubber bar in FFT/PSD windows ───────────────────────────────────────── */
 .chart-window-scrubber {
   display: flex;

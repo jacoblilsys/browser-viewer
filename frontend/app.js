@@ -36,6 +36,10 @@ let windowSec = 5;
 let _lastFFT = null;  // { freq_hz, magnitudes, psd, unit, fft_bins, fft_size }
 let _burstFFT = null; // { snapshots: [...], index: 0 } — set after burst capture
 
+// Time sync ring buffer
+const _timeSync = { t: [], diff_ms: [] };
+const MAX_TIMESYNC_PTS = 600; // ~10 minutes at 1 Hz status rate
+
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const dotSensor = document.getElementById('dot-sensor');
 const dotLog    = document.getElementById('dot-log');
@@ -72,6 +76,7 @@ const WINDOW_TYPES = {
   spectX: { label: 'Spectrogram — X',    group: 'spectrogram', axis: 'x' },
   spectY: { label: 'Spectrogram — Y',    group: 'spectrogram', axis: 'y' },
   spectZ: { label: 'Spectrogram — Z',    group: 'spectrogram', axis: 'z' },
+  timeSync: { label: 'Time Sync',        group: 'timesync' },
 };
 
 // ── Floating window manager ──────────────────────────────────────────────────
@@ -180,6 +185,8 @@ function createChartWindow(type, opts = {}) {
   requestAnimationFrame(() => {
     if (info.group === 'spectrogram') {
       win.plot = _createSpectrogramPlot(canvas, info);
+    } else if (info.group === 'timesync') {
+      win.plot = _createTimeSyncPlot(canvas);
     } else {
       win.plot = _createPlot(type, canvas, info);
     }
@@ -526,6 +533,86 @@ function _showBurstScrubbers() {
   }
 }
 
+// ── Time Sync window ─────────────────────────────────────────────────────────
+function _createTimeSyncPlot(container) {
+  // Time display panel above the graph
+  const infoDiv = document.createElement('div');
+  infoDiv.className = 'timesync-info';
+  infoDiv.innerHTML = `
+    <div><span class="ts-label">Device (NTP):</span> <span class="ts-value" id="ts-device">—</span></div>
+    <div><span class="ts-label">Host:</span> <span class="ts-value" id="ts-host">—</span></div>
+    <div><span class="ts-label">Difference:</span> <span class="ts-value" id="ts-diff">—</span></div>
+  `;
+  container.appendChild(infoDiv);
+
+  // Graph canvas
+  const graphDiv = document.createElement('div');
+  graphDiv.className = 'timesync-graph';
+  container.appendChild(graphDiv);
+
+  const w = graphDiv.clientWidth || 400;
+  const h = graphDiv.clientHeight || 150;
+
+  const opts = {
+    width: w, height: h,
+    pxAlign: false,
+    cursor: { show: true, drag: { x: true, y: true } },
+    legend: { show: false },
+    plugins: [wheelZoomPlugin()],
+    axes: [
+      { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: { stroke: '#444', width: 0.5 }, label: 'Time' },
+      { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: { stroke: '#334', width: 0.5 }, label: 'ms' },
+    ],
+    series: [
+      {},
+      { stroke: '#ffb300', width: 2, paths: uPlot.paths.linear(), label: 'Host − Device' },
+    ],
+    scales: { x: { time: false }, y: { auto: true } },
+  };
+
+  const plot = new uPlot(opts, [[], []], graphDiv);
+
+  return {
+    _plot: plot,
+    _graphDiv: graphDiv,
+    _infoDiv: infoDiv,
+    setSize() {
+      if (graphDiv.clientWidth > 0) {
+        const gh = container.clientHeight - infoDiv.offsetHeight;
+        plot.setSize({ width: graphDiv.clientWidth, height: Math.max(60, gh) });
+      }
+    },
+    destroy() { plot.destroy(); infoDiv.remove(); graphDiv.remove(); },
+    setData(data) { plot.setData(data); },
+    update(deviceNs, hostNs, diffMs) {
+      // Update text display
+      const devDate = new Date(deviceNs / 1e6);
+      const hostDate = new Date(hostNs / 1e6);
+      const fmt = (d) => d.toISOString().replace('T', ' ').replace('Z', '');
+      container.querySelector('#ts-device').textContent = fmt(devDate);
+      container.querySelector('#ts-host').textContent = fmt(hostDate);
+      const sign = diffMs >= 0 ? '+' : '';
+      container.querySelector('#ts-diff').textContent = `${sign}${diffMs.toFixed(2)} ms`;
+
+      // Update graph with ring buffer data
+      if (_timeSync.t.length > 1) {
+        // Normalize time axis to seconds since first point
+        const t0 = _timeSync.t[0];
+        const t = _timeSync.t.map(v => v - t0);
+        plot.setData([t, _timeSync.diff_ms]);
+      }
+    },
+  };
+}
+
+function _updateTimeSyncWindows(deviceNs, hostNs, diffMs) {
+  for (const win of Object.values(_chartWindows)) {
+    if (WINDOW_TYPES[win.type]?.group === 'timesync' && win.plot && win.plot.update) {
+      win.plot.update(deviceNs, hostNs, diffMs);
+    }
+  }
+}
+
 // ── uPlot creation per window type ────────────────────────────────────────────
 const _GRID = { stroke: '#444', width: 0.5 };
 const _GRID_Y = { stroke: '#334', width: 0.5 };
@@ -716,6 +803,20 @@ function handleFrame(msg) {
     lblRate.textContent = _rateHz >= 1000
       ? `${(_rateHz / 1000).toFixed(1)} kHz`
       : `${Math.round(_rateHz)} Hz`;
+  }
+
+  // Collect time sync data
+  if (msg.device_time_ns && msg.t_end_ns) {
+    const hostSec = msg.t_end_ns / 1e9;
+    const devSec = msg.device_time_ns / 1e9;
+    const diffMs = (hostSec - devSec) * 1000;
+    _timeSync.t.push(hostSec);
+    _timeSync.diff_ms.push(diffMs);
+    while (_timeSync.t.length > MAX_TIMESYNC_PTS) {
+      _timeSync.t.shift();
+      _timeSync.diff_ms.shift();
+    }
+    _updateTimeSyncWindows(msg.device_time_ns, msg.t_end_ns, diffMs);
   }
 
   // Raw samples mode (low ODR — all samples forwarded)
@@ -946,6 +1047,8 @@ btnClear.addEventListener('click', () => {
   for (const k of Object.keys(ring)) ring[k] = [];
   _lastFFT = null;
   _burstFFT = null;
+  _timeSync.t = [];
+  _timeSync.diff_ms = [];
   _showBurstScrubbers();
   _updateSpectrograms();
   for (const win of Object.values(_chartWindows)) {
@@ -1011,6 +1114,12 @@ document.getElementById('btn-export').addEventListener('click', () => {
       }
     }
     filename = `spectrogram_${axis}.csv`;
+  } else if (info && info.group === 'timesync' && _timeSync.t.length > 0) {
+    csv = 'host_time_s,diff_ms\n';
+    for (let i = 0; i < _timeSync.t.length; i++) {
+      csv += `${_timeSync.t[i]},${_timeSync.diff_ms[i]}\n`;
+    }
+    filename = 'time_sync.csv';
   } else {
     alert('No data to export for this window.');
     return;
@@ -1453,6 +1562,9 @@ function applyTheme(isLight) {
       if (info.group === 'spectrogram') {
         win.canvas.innerHTML = '';
         win.plot = _createSpectrogramPlot(win.canvas, info);
+      } else if (info.group === 'timesync') {
+        win.canvas.innerHTML = '';
+        win.plot = _createTimeSyncPlot(win.canvas);
       } else {
         win.plot = _createPlot(win.type, win.canvas, info);
       }
