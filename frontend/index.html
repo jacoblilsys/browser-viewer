@@ -120,6 +120,7 @@
       <div class="card">
         <label title="Accelerometer full scale range. Higher values allow measuring stronger vibrations but with less resolution.">Full scale
           <select id="cfg-fs">
+            <option value="" selected disabled>— click Get Config —</option>
             <option value="ACCEL_FS_2G">±2 G</option>
             <option value="ACCEL_FS_4G">±4 G</option>
             <option value="ACCEL_FS_8G">±8 G</option>
@@ -128,6 +129,7 @@
         </label>
         <label title="Which accelerometer axes to stream. Fewer axes = less bandwidth.">Axes
           <select id="cfg-axes">
+            <option value="" selected disabled>— click Get Config —</option>
             <option value="AXIS_XYZ">X + Y + Z</option>
             <option value="AXIS_X">X only</option>
             <option value="AXIS_Y">Y only</option>
@@ -139,6 +141,7 @@
         </label>
         <label title="Output Data Rate divisor. DIV_1 = full 26.7 kHz, DIV_2 = 13.3 kHz, DIV_4 = 6.7 kHz, etc. Lower rate = less data, lower frequency range.">ODR divisor
           <select id="cfg-odr">
+            <option value="" selected disabled>— click Get Config —</option>
             <option value="ODR_DIV_1">÷1 (26.7 kHz)</option>
             <option value="ODR_DIV_2">÷2 (13.3 kHz)</option>
             <option value="ODR_DIV_4">÷4 (6.7 kHz)</option>
@@ -152,6 +155,7 @@
         </label>
         <label title="Digital filter applied to the accelerometer data before streaming.">Filter
           <select id="cfg-filt">
+            <option value="" selected disabled>— click Get Config —</option>
             <option value="FILTER_NONE">None</option>
             <option value="FILTER_LOW_PASS2">Low-pass (2nd order)</option>
             <option value="FILTER_HIGH_PASS">High-pass</option>
@@ -160,6 +164,7 @@
         </label>
         <label title="Filter cutoff frequency. Only applies when a filter is enabled.">Cutoff
           <select id="cfg-cutoff">
+            <option value="" selected disabled>— click Get Config —</option>
             <option value="CUTOFF_6p66_KHZ">6.66 kHz</option>
             <option value="CUTOFF_2p66_KHZ">2.66 kHz</option>
             <option value="CUTOFF_1p33_KHZ">1.33 kHz</option>
@@ -170,6 +175,7 @@
         </label>
         <label title="FFT window size computed on the sensor. Larger = better frequency resolution but slower update rate. 256 bins at 26.7 kHz updates ~208 times/sec, 2048 bins ~26 times/sec.">FFT Size
           <select id="cfg-fft-size">
+            <option value="" selected disabled>— click Get Config —</option>
             <option value="FFT_SIZE_256">256</option>
             <option value="FFT_SIZE_512">512</option>
             <option value="FFT_SIZE_1024">1024</option>
