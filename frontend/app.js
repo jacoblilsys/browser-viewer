@@ -484,15 +484,24 @@ function _showBurstFFTFrame(index) {
 
   _lastFFT = { freq_hz: freq, magnitudes: snap.magnitudes, psd: snap.psd || {}, unit: snap.unit || 'm/s²', fft_bins: snap.fft_bins, fft_size: fftSize };
 
-  // Update FFT/PSD windows
+  // Update FFT/PSD windows (with vector fallback)
+  const _resolveAxis = (dict, axis) => {
+    if (!dict) return null;
+    if (dict[axis]) return dict[axis];
+    const keys = Object.keys(dict);
+    if (keys.length === 1) return dict[keys[0]];
+    return null;
+  };
   for (const win of Object.values(_chartWindows)) {
     if (!win.plot) continue;
     const info = WINDOW_TYPES[win.type];
     if (!info) continue;
-    if (info.group === 'fft' && snap.magnitudes[info.axis]) {
-      win.plot.setData([freq, snap.magnitudes[info.axis]]);
-    } else if (info.group === 'psd' && snap.psd && snap.psd[info.axis]) {
-      win.plot.setData([freq, snap.psd[info.axis]]);
+    if (info.group === 'fft') {
+      const data = _resolveAxis(snap.magnitudes, info.axis);
+      if (data) win.plot.setData([freq, data]);
+    } else if (info.group === 'psd') {
+      const data = _resolveAxis(snap.psd, info.axis);
+      if (data) win.plot.setData([freq, data]);
     }
   }
 
@@ -937,15 +946,26 @@ function handleFFT(msg) {
   _lastFFT = { freq_hz: freq, magnitudes: mags, psd: psd || {}, unit: msg.unit || 'm/s\u00B2', fft_bins: msg.fft_bins, fft_size: fftSize };
 
   // Update all FFT and PSD windows
+  // Resolve axis: use exact match, or fall back to the only available axis (vector mode)
+  const _resolveAxis = (dict, axis) => {
+    if (!dict) return null;
+    if (dict[axis]) return dict[axis];
+    const keys = Object.keys(dict);
+    if (keys.length === 1) return dict[keys[0]];
+    return null;
+  };
+
   for (const win of Object.values(_chartWindows)) {
     if (!win.plot) continue;
     const info = WINDOW_TYPES[win.type];
     if (!info) continue;
 
-    if (info.group === 'fft' && mags[info.axis]) {
-      win.plot.setData([freq, mags[info.axis]]);
-    } else if (info.group === 'psd' && psd && psd[info.axis]) {
-      win.plot.setData([freq, psd[info.axis]]);
+    if (info.group === 'fft') {
+      const data = _resolveAxis(mags, info.axis);
+      if (data) win.plot.setData([freq, data]);
+    } else if (info.group === 'psd') {
+      const data = _resolveAxis(psd, info.axis);
+      if (data) win.plot.setData([freq, data]);
     }
   }
 }
