@@ -532,6 +532,25 @@ body.light .setup-warning {
 }
 
 /* ── rescue command box ──────────────────────────────────────────────────── */
+/* ── NTP status + field row ────────────────────────────────────────────────── */
+.ntp-field-row {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+.ntp-field-row input {
+  flex: 1;
+}
+.ntp-status {
+  font-size: .85rem;
+  white-space: nowrap;
+}
+.ntp-status.ok { color: #4caf50; }
+.ntp-status.fail { color: #e05252; }
+.ntp-status.checking { color: var(--muted); }
+body.light .ntp-status.ok { color: #2e8b38; }
+body.light .ntp-status.fail { color: #c0392b; }
+
 .setup-rescue {
   margin-top: .5rem;
   margin-bottom: .5rem;

@@ -146,9 +146,77 @@ Toggle between formats in the chart toolbar dropdown (while not actively logging
 | POST   | `/api/stream/fft/start` | Start FFT streaming on sensor      |
 | POST   | `/api/stream/fft/stop`  | Stop FFT streaming on sensor       |
 | POST   | `/api/sensor/reset`    | Reset the sensor                    |
+| POST   | `/api/ntp/check`       | Test if an NTP server is reachable  |
+
+## NTP Server Setup
+
+The sensor needs an NTP server for time synchronization. Your machine can serve NTP to the sensor. The viewer's "Test NTP" button (in Network Config) checks if port 123 is reachable.
+
+### Linux (chrony)
+
+```bash
+# Install
+sudo apt install -y chrony
+
+# Allow your local subnet to query NTP
+echo "allow 192.168.0.0/24" | sudo tee -a /etc/chrony/chrony.conf
+
+# Fix sandbox issue — chrony's -F 1 flag prevents binding to port 123
+sudo mkdir -p /etc/systemd/system/chrony.service.d
+echo -e "[Service]\nExecStart=\nExecStart=/usr/sbin/chronyd" | sudo tee /etc/systemd/system/chrony.service.d/override.conf
+sudo systemctl daemon-reload
+sudo systemctl restart chrony
+
+# Verify port 123 is open
+ss -uln | grep 123
+# Should show: UNCONN 0 0 0.0.0.0:123 0.0.0.0:*
+
+# Verify sync status
+chronyc tracking
+```
+
+### Windows
+
+Windows has a built-in NTP server (w32time):
+
+```cmd
+:: Run as Administrator
+w32tm /config /reliable:YES
+net stop w32time && net start w32time
+
+:: Verify
+w32tm /query /status
+```
+
+Or install a dedicated NTP server like [Meinberg NTP](https://www.meinbergglobal.com/english/sw/ntp.htm).
+
+### macOS
+
+macOS can serve NTP via `ntpd`:
+
+```bash
+sudo sntp -sS pool.ntp.org   # sync local clock first
+# For serving: edit /etc/ntp.conf and restart ntpd
+```
+
+### Verify from the viewer
+
+1. Set the NTP Server IP in Network Config to your machine's IP
+2. Click "Test" next to the field — should show "OK (stratum N, offset ±X ms)"
+3. The Setup modal also auto-checks NTP when opened
 
 ## Tips
-If the viewer gets a different network subnet than the sensor is on you can run
-command (windows as admin):
-netsh interface ip add address "Ethernet 2" 192.168.0.200 255.255.255.0
-Where the IP shown is the IP you wish to add to your Ethernet network. 
+
+If the viewer is on a different subnet than the sensor, you can add an IP address to your network adapter:
+
+**Windows** (run as admin):
+```
+netsh interface ip add address "Ethernet" 192.168.0.200 255.255.255.0
+```
+
+**Linux**:
+```bash
+sudo ip addr add 192.168.0.200/24 dev eth0
+```
+
+Or use the `setup_sensor.py` rescue tool for link-local sensors — see [setup_sensor.py](setup_sensor.py).

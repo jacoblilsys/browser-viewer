@@ -241,6 +241,59 @@ async def api_status():
     }
 
 
+class NtpCheckPayload(BaseModel):
+    ip: str
+
+
+def _sntp_check(ip: str, timeout: float = 3.0) -> dict:
+    """Send a minimal SNTP request and parse the response."""
+    import struct as _struct, socket as _sock, time as _time
+
+    # NTP request: version 3, mode 3 (client), 48 bytes
+    req = b'\x1b' + b'\x00' * 47
+
+    sock = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        t0 = _time.time()
+        sock.sendto(req, (ip, 123))
+        data, _ = sock.recvfrom(256)
+        t1 = _time.time()
+        rtt_ms = (t1 - t0) * 1000
+
+        if len(data) < 48:
+            return {'reachable': False, 'error': 'short response'}
+
+        # Parse stratum (byte 1) and transmit timestamp (bytes 40-47)
+        stratum = data[1]
+        # NTP timestamp: seconds since 1900-01-01
+        ntp_sec = _struct.unpack('!I', data[40:44])[0]
+        ntp_frac = _struct.unpack('!I', data[44:48])[0]
+        # Convert to Unix epoch (NTP epoch is 1900, Unix is 1970)
+        ntp_unix = ntp_sec - 2208988800 + ntp_frac / (2**32)
+        offset_ms = (ntp_unix - (t0 + t1) / 2) * 1000
+
+        return {
+            'reachable': True,
+            'stratum': stratum,
+            'offset_ms': round(offset_ms, 2),
+            'rtt_ms': round(rtt_ms, 2),
+        }
+    except _sock.timeout:
+        return {'reachable': False, 'error': 'timeout'}
+    except Exception as e:
+        return {'reachable': False, 'error': str(e)}
+    finally:
+        sock.close()
+
+
+@app.post('/api/ntp/check')
+async def api_ntp_check(body: NtpCheckPayload):
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _sntp_check, body.ip)
+    return result
+
+
 @app.post('/api/stats/reset')
 async def api_stats_reset():
     for k in _stats:

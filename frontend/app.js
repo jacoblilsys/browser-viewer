@@ -1279,6 +1279,36 @@ document.getElementById('btn-set-net').addEventListener('click', async () => {
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
 
+// ── NTP check ────────────────────────────────────────────────────────────────
+async function _checkNtp(ip, statusEl) {
+  if (!ip) { statusEl.textContent = ''; statusEl.className = 'ntp-status'; return; }
+  statusEl.textContent = 'checking…';
+  statusEl.className = 'ntp-status checking';
+  try {
+    const r = await fetch('/api/ntp/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    });
+    const d = await r.json();
+    if (d.reachable) {
+      statusEl.textContent = `OK (stratum ${d.stratum}, ${d.offset_ms > 0 ? '+' : ''}${d.offset_ms} ms)`;
+      statusEl.className = 'ntp-status ok';
+    } else {
+      statusEl.textContent = `Not reachable — ${d.error || 'check NTP setup'}`;
+      statusEl.className = 'ntp-status fail';
+    }
+  } catch {
+    statusEl.textContent = 'Check failed';
+    statusEl.className = 'ntp-status fail';
+  }
+}
+
+document.getElementById('btn-test-ntp').addEventListener('click', () => {
+  const ip = document.getElementById('net-ntp-ip').value.trim();
+  _checkNtp(ip, document.getElementById('ntp-status'));
+});
+
 document.getElementById('btn-stream-start').addEventListener('click', async () => {
   const r = await fetch('/api/stream/start', { method: 'POST' });
   const d = await r.json();
@@ -1408,6 +1438,8 @@ async function _showSetupModal(device) {
   document.getElementById('setup-server-ip').textContent = host.ip;
   document.getElementById('setup-server-port').textContent = host.tcp_port;
   document.getElementById('setup-ntp-ip').textContent = host.ip;
+  // Auto-check NTP availability
+  _checkNtp(host.ip, document.getElementById('setup-ntp-status'));
   document.getElementById('setup-current-ip').textContent = device.ip;
   document.getElementById('setup-info').textContent =
     `Sensor: ${device.mac} (${device.ip})`;
