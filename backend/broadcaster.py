@@ -142,8 +142,8 @@ class Broadcaster:
 
     async def _finish_burst(self, frame: FrameData):
         self._burst_active = False
-        # Restore previous pause state
-        self._paused = self._was_paused
+        # Keep streaming paused after burst so data isn't immediately overwritten.
+        # User clicks Stream ▶ to resume when done inspecting.
         msg = json.dumps({
             'type':           'burst',
             'sample_rate_hz': frame.sample_rate_hz,
