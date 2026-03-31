@@ -830,8 +830,8 @@ body.light .console-float {
 
 .device-item {
   display: flex;
-  align-items: center;
-  gap: .4rem;
+  flex-direction: column;
+  gap: .15rem;
   padding: .35rem .45rem;
   border-radius: var(--radius);
   cursor: pointer;
@@ -852,6 +852,18 @@ body.light .selected-info {
   color: #000;
 }
 
+.device-row1 {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+.device-row2 {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding-left: 1.2rem;
+}
+
 .device-item .device-mac {
   font-family: 'Cascadia Code', 'Fira Code', monospace;
   flex: 1;
@@ -862,6 +874,13 @@ body.light .selected-info {
 }
 .device-item .device-ip {
   color: var(--muted);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: .82rem;
+  white-space: nowrap;
+}
+.device-item .device-fw {
+  color: var(--muted);
+  font-size: .78rem;
   white-space: nowrap;
 }
 .device-item .device-mode {
@@ -882,8 +901,8 @@ body.light .selected-info {
 }
 
 .btn-setup {
-  font-size: .75rem;
-  padding: .2rem .4rem;
+  font-size: .92rem;
+  padding: .35rem .65rem;
   white-space: nowrap;
 }
 

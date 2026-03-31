@@ -1417,12 +1417,18 @@ function renderDeviceList(devices) {
 
     const modeClass = (d.mode || '').toLowerCase();
     const modeBadge = modeClass ? `<span class="device-mode ${modeClass}">${modeClass}</span>` : '';
+    const fwLabel = d.fw_app ? `FW ${d.fw_app}` : (d.fw_bl ? `BL ${d.fw_bl}` : '');
     el.innerHTML = `
-      <span class="dot ${modeClass === 'app' ? 'green' : modeClass === 'boot' ? 'orange' : ''}" title="${modeClass === 'app' ? 'Application mode — sensor is running' : modeClass === 'boot' ? 'Bootloader mode — sensor is waiting to start' : 'Unknown mode'}"></span>
-      <span class="device-mac">${d.mac}</span>
-      ${modeBadge}
-      <span class="device-ip">${d.ip}</span>
-      <button class="btn btn-setup" data-ip="${d.ip}" data-mac="${d.mac}" title="Set server address to this machine">Setup</button>
+      <div class="device-row1">
+        <span class="dot ${modeClass === 'app' ? 'green' : modeClass === 'boot' ? 'orange' : ''}" title="${modeClass === 'app' ? 'Application mode — sensor is running' : modeClass === 'boot' ? 'Bootloader mode — sensor is waiting to start' : 'Unknown mode'}"></span>
+        <span class="device-mac">${d.mac}</span>
+        ${modeBadge}
+        <button class="btn btn-setup" data-ip="${d.ip}" data-mac="${d.mac}" title="Configure server address, NTP, and IP settings on this sensor">Setup</button>
+      </div>
+      <div class="device-row2">
+        <span class="device-ip">${d.ip}</span>
+        <span class="device-fw">${fwLabel}</span>
+      </div>
     `;
 
     // Auto fast-boot if sensor is in bootloader and setting is enabled
