@@ -251,14 +251,16 @@ class Broadcaster:
             return  # dirty flag already cleared; skip send
 
         msg = json.dumps({
-            'type':       'fft',
-            'fft_bins':   fft.fft_bins,
-            'fft_size':   fft.fft_size,
-            'freq_hz':    fft.freq_hz,
-            'magnitudes': fft.magnitudes,
-            'psd':        fft.psd,
-            'unit':       fft.unit,
-            'seq':        fft.seq,
+            'type':           'fft',
+            'fft_bins':       fft.fft_bins,
+            'fft_size':       fft.fft_size,
+            'freq_hz':        fft.freq_hz,
+            'magnitudes':     fft.magnitudes,
+            'psd':            fft.psd,
+            'unit':           fft.unit,
+            'seq':            fft.seq,
+            't_end_ns':       fft.recv_time_ns,
+            'device_time_ns': fft.timestamp_ns,
         })
 
         await self._broadcast(msg)

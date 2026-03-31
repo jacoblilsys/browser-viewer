@@ -893,6 +893,20 @@ function handleFFT(msg) {
 
   if (!freq || !mags) return;
 
+  // Collect time sync data from FFT frames (works even without raw data stream)
+  if (msg.device_time_ns && msg.t_end_ns) {
+    const hostSec = msg.t_end_ns / 1e9;
+    const devSec = msg.device_time_ns / 1e9;
+    const diffMs = (hostSec - devSec) * 1000;
+    _timeSync.t.push(hostSec);
+    _timeSync.diff_ms.push(diffMs);
+    while (_timeSync.t.length > MAX_TIMESYNC_PTS) {
+      _timeSync.t.shift();
+      _timeSync.diff_ms.shift();
+    }
+    _updateTimeSyncWindows(msg.device_time_ns, msg.t_end_ns, diffMs);
+  }
+
   // Recompute frequency axis from actual sample rate if known
   const fftSize = msg.fft_size || (msg.fft_bins ? msg.fft_bins * 2 : 0);
   if (_rateHz > 0 && fftSize > 0) {
