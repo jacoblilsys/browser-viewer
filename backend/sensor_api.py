@@ -26,6 +26,15 @@ if _PROTO_DIR not in sys.path:
 
 from protobuf import sensor_cmd_pb2 as _pb
 
+def _safe_enum_name(enum_type, value, extensions=None):
+    """Get enum name, falling back to extensions dict for new values not in compiled proto."""
+    try:
+        return enum_type.Name(value)
+    except ValueError:
+        if extensions and value in extensions:
+            return extensions[value]
+        return str(value)
+
 _UDP_PORT           = 56671
 _MULTICAST_ADDR     = '224.0.0.251'
 _RESPONSE_TIMEOUT_S = 10.0
@@ -188,7 +197,7 @@ async def get_sensor_config(target_ip: str, mac: str, password: str) -> dict:
     sc = resp.sensor
     return {
         'full_scale': _pb.AccelFullScale.Name(sc.full_scale),
-        'axes':       _pb.AxisMask.Name(sc.axes),
+        'axes':       _safe_enum_name(_pb.AxisMask, sc.axes, {9: 'AXIS_XY_VECTOR', 10: 'AXIS_XZ_VECTOR', 11: 'AXIS_YZ_VECTOR', 12: 'AXIS_XYZ_VECTOR'}),
         'odr_div':    _pb.OdrDiv.Name(sc.odr_div),
         'filter': {
             'filter_enabled': _pb.FilterEnabled.Name(sc.filter.filter_enabled),
@@ -218,7 +227,13 @@ async def set_sensor_config(
     if full_scale is not None:
         sc.full_scale = _pb.AccelFullScale.Value(full_scale)
     if axes is not None:
-        sc.axes = _pb.AxisMask.Value(axes)
+        try:
+            sc.axes = _pb.AxisMask.Value(axes)
+        except ValueError:
+            # New enum values not in compiled proto — use raw int
+            _axis_ext = {'AXIS_XY_VECTOR': 9, 'AXIS_XZ_VECTOR': 10,
+                         'AXIS_YZ_VECTOR': 11, 'AXIS_XYZ_VECTOR': 12}
+            sc.axes = _axis_ext.get(axes, 0)
     if odr_div is not None:
         sc.odr_div = _pb.OdrDiv.Value(odr_div)
     if filter_enabled is not None:
