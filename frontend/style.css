@@ -670,6 +670,15 @@ summary:hover { color: var(--accent); }
   font-size: .95rem;
   font-weight: 600;
 }
+body.light .stream-btn {
+  color: #1a1a2e;
+}
+body.light .stream-btn.active {
+  color: #1a1a2e;
+}
+body.light .stream-btn.btn-primary {
+  color: #1a1a2e;
+}
 
 .burst-duration-select {
   background: var(--input-bg);
