@@ -345,7 +345,7 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         axis_names = axis_names[:num_axes]
         scale_factors = scale_factors[:num_axes]
 
-    all_mags = np.frombuffer(raw_payload[:expected], dtype='<i2').astype(np.float64)
+    all_mags = np.frombuffer(raw_payload[:num_axes * bytes_per_axis], dtype='<i2').astype(np.float64)
 
     magnitudes: Dict[str, list] = {}
     psd: Dict[str, list] = {}
