@@ -1265,7 +1265,13 @@ async function apiPost(path, body) {
 
 document.getElementById('btn-get-info').addEventListener('click', async () => {
   const d = await apiPost('/api/sensor/info', sensorBody());
-  outInfo.textContent = JSON.stringify(d, null, 2);
+  // Format with units for readability
+  const fmt = { ...d };
+  if (fmt.temp1 != null)     fmt.temp1 = `${fmt.temp1.toFixed(1)} °C`;
+  if (fmt.temp2 != null)     fmt.temp2 = `${fmt.temp2.toFixed(1)} °C`;
+  if (fmt.temp_core != null) fmt.temp_core = `${fmt.temp_core.toFixed(1)} °C`;
+  if (fmt.cpu_usage != null) fmt.cpu_usage = `${fmt.cpu_usage.toFixed(1)} %`;
+  outInfo.textContent = JSON.stringify(fmt, null, 2);
 });
 
 document.getElementById('btn-get-cfg').addEventListener('click', async () => {
