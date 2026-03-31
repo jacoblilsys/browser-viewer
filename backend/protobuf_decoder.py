@@ -330,14 +330,20 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         if u:
             unit = u
 
-    num_axes = len(axis_names) or 1
+    num_axes_meta = len(axis_names) or 1
 
-    # Parse num_axes x fft_bins int16 magnitudes from raw payload
-    expected = num_axes * fft_bins * 2
-    if len(raw_payload) < expected:
-        _log.warning('FFT payload too short: %d < %d (%d axes × %d bins)',
-                     len(raw_payload), expected, num_axes, fft_bins)
+    # Derive actual axis count from payload size — firmware may send fewer
+    # axes than meta_data entries (e.g. single-axis mode with 3 metadata)
+    bytes_per_axis = fft_bins * 2
+    num_axes = len(raw_payload) // bytes_per_axis if bytes_per_axis > 0 else 0
+    if num_axes == 0:
+        _log.warning('FFT payload too short for even 1 axis: %d bytes, %d bins',
+                     len(raw_payload), fft_bins)
         return None
+    if num_axes < num_axes_meta:
+        # Trim metadata to match actual payload
+        axis_names = axis_names[:num_axes]
+        scale_factors = scale_factors[:num_axes]
 
     all_mags = np.frombuffer(raw_payload[:expected], dtype='<i2').astype(np.float64)
 
