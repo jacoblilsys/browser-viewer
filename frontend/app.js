@@ -1419,6 +1419,10 @@ async function refreshDevices() {
     const r = await fetch('/api/devices');
     const devices = await r.json();
     renderDeviceList(devices);
+    // Auto-select if only one sensor on the network
+    if (devices.length === 1 && !selectedSensor) {
+      selectSensor(devices[0]);
+    }
   } catch (e) {
     deviceListEl.innerHTML = '<div class="device-empty">Fetch failed</div>';
   }
