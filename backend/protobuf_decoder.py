@@ -77,6 +77,11 @@ _DATA_AXIS_STR = {
     DataAxis.DATA_AXIS_PITCH:        'pitch',
     DataAxis.DATA_AXIS_ROLL:         'roll',
     DataAxis.DATA_AXIS_YAW:          'yaw',
+    # Vector magnitude axes (proto3 passes unknown enum values as integers)
+    10:                              'xy_vec',
+    11:                              'xz_vec',
+    12:                              'yz_vec',
+    13:                              'xyz_vec',
 }
 
 

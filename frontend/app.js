@@ -792,6 +792,21 @@ function connect() {
   };
 }
 
+// Find acceleration columns dynamically (handles accel_x, accel_xy_vec, etc.)
+function _findAccelCols(obj) {
+  const keys = Object.keys(obj).filter(k => k.startsWith('accel_'));
+  // Map to x/y/z slots: accel_x→x, accel_y→y, accel_z→z, vector→x (single channel)
+  let x = null, y = null, z = null;
+  for (const k of keys) {
+    const suffix = k.slice(6); // after 'accel_'
+    if (suffix === 'x') x = k;
+    else if (suffix === 'y') y = k;
+    else if (suffix === 'z') z = k;
+    else if (!x) x = k; // vector or other single-channel → put in x slot
+  }
+  return { x, y, z };
+}
+
 function handleFrame(msg) {
   if (msg.stream_uid !== undefined && msg.stream_uid !== _streamUid) {
     _streamUid = msg.stream_uid;
@@ -822,9 +837,10 @@ function handleFrame(msg) {
   // Raw samples mode (low ODR — all samples forwarded)
   if (msg.raw_samples) {
     const rs = msg.raw_samples;
-    const x = rs['accel_x'] || [];
-    const y = rs['accel_y'] || [];
-    const z = rs['accel_z'] || [];
+    const cols = _findAccelCols(rs);
+    const x = cols.x ? rs[cols.x] : [];
+    const y = cols.y ? rs[cols.y] : [];
+    const z = cols.z ? rs[cols.z] : [];
     const n = Math.max(x.length, y.length, z.length);
     if (n === 0) return;
 
@@ -833,24 +849,26 @@ function handleFrame(msg) {
     const tStart = tEnd - (n - 1) / rate;
     for (let i = 0; i < n; i++) {
       ring.t.push(tStart + i / rate);
-      ring.x_last.push(x[i] ?? null);
-      ring.y_last.push(y[i] ?? null);
-      ring.z_last.push(z[i] ?? null);
+      ring.x_last.push(i < x.length ? x[i] : null);
+      ring.y_last.push(i < y.length ? y[i] : null);
+      ring.z_last.push(i < z.length ? z[i] : null);
     }
   } else {
     // Decimated mode (high ODR — min/max/last envelope)
     const axes = msg.axes || {};
     if (Object.keys(axes).length === 0) return;
 
+    const cols = _findAccelCols(axes);
     const tSec = msg.t_end_ns / 1e9;
     const get = (label, key) => {
+      if (!label) return null;
       const a = axes[label];
       return (a && key in a) ? a[key] : null;
     };
 
-    const xLast = get('accel_x', 'last');
-    const yLast = get('accel_y', 'last');
-    const zLast = get('accel_z', 'last');
+    const xLast = get(cols.x, 'last');
+    const yLast = get(cols.y, 'last');
+    const zLast = get(cols.z, 'last');
 
     if (xLast === null && yLast === null && zLast === null) return;
 
@@ -935,9 +953,10 @@ function handleFFT(msg) {
 function handleBurst(msg) {
   const samples = msg.samples || {};
   const rate = msg.sample_rate_hz || _rateHz || 26667;
-  const x = samples['accel_x'] || [];
-  const y = samples['accel_y'] || [];
-  const z = samples['accel_z'] || [];
+  const cols = _findAccelCols(samples);
+  const x = cols.x ? samples[cols.x] : [];
+  const y = cols.y ? samples[cols.y] : [];
+  const z = cols.z ? samples[cols.z] : [];
   const n = Math.max(x.length, y.length, z.length);
   if (n === 0) return;
 
