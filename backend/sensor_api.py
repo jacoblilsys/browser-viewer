@@ -177,7 +177,7 @@ async def get_sensor_info(target_ip: str, mac: str, password: str) -> dict:
     req.get_sensor_info.SetInParent()
     resp = _check(await _send_recv(target_ip, req.SerializeToString(), mac, password))
     info = resp.info
-    result = {
+    return {
         'sensor_type':         info.sensor_type,
         'hardware_version':    info.hardware_version,
         'firmware_version':    info.firmware_version,
@@ -187,18 +187,9 @@ async def get_sensor_info(target_ip: str, mac: str, password: str) -> dict:
         'temp_core':           info.temp_core,
         'utc_time':            info.utc_time,
         'error_bits':          info.error_bits,
+        'cpu_usage':           info.cpu_usage,
+        'debug_str':           info.debug_str,
     }
-    # New fields not yet in compiled _pb2 — extract from unknown fields
-    # Field 10 = cpu_usage (float), Field 11 = debug_str (string)
-    try:
-        for field in info.UnknownFields():
-            if field.field_number == 10:  # cpu_usage: float (wire type 5 = fixed32)
-                result['cpu_usage'] = struct.unpack('<f', field.data)[0] if isinstance(field.data, bytes) else field.data
-            elif field.field_number == 11:  # debug_str: string (wire type 2 = length-delimited)
-                result['debug_str'] = field.data.decode('utf-8', errors='replace') if isinstance(field.data, bytes) else str(field.data)
-    except Exception:
-        pass  # compiled proto may not support UnknownFields()
-    return result
 
 
 async def get_sensor_config(target_ip: str, mac: str, password: str) -> dict:
@@ -208,7 +199,7 @@ async def get_sensor_config(target_ip: str, mac: str, password: str) -> dict:
     sc = resp.sensor
     return {
         'full_scale': _pb.AccelFullScale.Name(sc.full_scale),
-        'axes':       _safe_enum_name(_pb.AxisMask, sc.axes, {9: 'AXIS_XY_VECTOR', 10: 'AXIS_XZ_VECTOR', 11: 'AXIS_YZ_VECTOR', 12: 'AXIS_XYZ_VECTOR'}),
+        'axes':       _pb.AxisMask.Name(sc.axes),
         'odr_div':    _pb.OdrDiv.Name(sc.odr_div),
         'filter': {
             'filter_enabled': _pb.FilterEnabled.Name(sc.filter.filter_enabled),
@@ -238,13 +229,7 @@ async def set_sensor_config(
     if full_scale is not None:
         sc.full_scale = _pb.AccelFullScale.Value(full_scale)
     if axes is not None:
-        try:
-            sc.axes = _pb.AxisMask.Value(axes)
-        except ValueError:
-            # New enum values not in compiled proto — use raw int
-            _axis_ext = {'AXIS_XY_VECTOR': 9, 'AXIS_XZ_VECTOR': 10,
-                         'AXIS_YZ_VECTOR': 11, 'AXIS_XYZ_VECTOR': 12}
-            sc.axes = _axis_ext.get(axes, 0)
+        sc.axes = _pb.AxisMask.Value(axes)
     if odr_div is not None:
         sc.odr_div = _pb.OdrDiv.Value(odr_div)
     if filter_enabled is not None:
