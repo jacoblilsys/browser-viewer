@@ -29,7 +29,6 @@ class Broadcaster:
         self._fps = fps
         self._max_fps = fps
         self._interval = 1.0 / fps
-        self._min_samples_per_emit = 50  # accumulate at least this many before sending
         self._lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
 
@@ -65,6 +64,8 @@ class Broadcaster:
 
     def pause(self):
         self._paused = True
+        # Clear buffers so no stale data is sent when resumed
+        self._buffers.clear()
 
     def resume(self):
         self._paused = False
@@ -101,11 +102,12 @@ class Broadcaster:
                 self._stream_key = new_key
             self._last_frame = frame
             self._units.update(frame.units)
-            # Adapt broadcast rate to sample rate
-            if frame.sample_rate_hz > 0:
-                ideal_fps = frame.sample_rate_hz / self._min_samples_per_emit
-                new_fps = max(1.0, min(ideal_fps, self._max_fps))
-                self._interval = 1.0 / new_fps
+            # Adapt broadcast rate: full speed for decimated, slower for raw passthrough
+            if frame.sample_rate_hz > 0 and frame.sample_rate_hz < 500:
+                # Raw passthrough mode — emit at ~5 FPS to batch samples
+                self._interval = 0.2
+            else:
+                self._interval = 1.0 / self._max_fps
             for label, arr in frame.columns.items():
                 if label not in self._buffers:
                     self._buffers[label] = deque()
@@ -200,8 +202,8 @@ class Broadcaster:
         rate_hz        = frame.sample_rate_hz if frame else 0.0
         stream_uid     = frame.stream_uid     if frame else 0
 
-        # At low sample rates, send all raw samples instead of decimating
-        if rate_hz > 0 and rate_hz < 1000:
+        # At very low sample rates, send all raw samples instead of decimating
+        if rate_hz > 0 and rate_hz < 500:
             msg = json.dumps({
                 'type':           'frame',
                 't_end_ns':       t_end_ns,
