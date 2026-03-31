@@ -177,7 +177,7 @@ async def get_sensor_info(target_ip: str, mac: str, password: str) -> dict:
     req.get_sensor_info.SetInParent()
     resp = _check(await _send_recv(target_ip, req.SerializeToString(), mac, password))
     info = resp.info
-    return {
+    result = {
         'sensor_type':         info.sensor_type,
         'hardware_version':    info.hardware_version,
         'firmware_version':    info.firmware_version,
@@ -188,6 +188,17 @@ async def get_sensor_info(target_ip: str, mac: str, password: str) -> dict:
         'utc_time':            info.utc_time,
         'error_bits':          info.error_bits,
     }
+    # New fields not yet in compiled _pb2 — extract from unknown fields
+    # Field 10 = cpu_usage (float), Field 11 = debug_str (string)
+    try:
+        for field in info.UnknownFields():
+            if field.field_number == 10:  # cpu_usage: float (wire type 5 = fixed32)
+                result['cpu_usage'] = struct.unpack('<f', field.data)[0] if isinstance(field.data, bytes) else field.data
+            elif field.field_number == 11:  # debug_str: string (wire type 2 = length-delimited)
+                result['debug_str'] = field.data.decode('utf-8', errors='replace') if isinstance(field.data, bytes) else str(field.data)
+    except Exception:
+        pass  # compiled proto may not support UnknownFields()
+    return result
 
 
 async def get_sensor_config(target_ip: str, mac: str, password: str) -> dict:
