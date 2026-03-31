@@ -16,7 +16,9 @@ if _PROTO_DIR not in sys.path:
     sys.path.insert(0, _PROTO_DIR)
 
 import logging
-logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s: %(message)s')
+_log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+logging.basicConfig(level=getattr(logging, _log_level, logging.INFO),
+                    format='%(levelname)s %(name)s: %(message)s')
 
 from contextlib import asynccontextmanager
 from pathlib import Path
