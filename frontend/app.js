@@ -936,10 +936,16 @@ function _updateRawStats() {
   const n = ring.t.length;
   if (n === 0) return;
 
+  // Only compute over the visible window
+  const tNow = ring.t[n - 1];
+  const tCut = tNow - windowSec;
+  let i0 = 0;
+  for (let i = 0; i < n; i++) { if (ring.t[i] >= tCut) { i0 = i; break; } }
+
   const stats = {};
   for (const [key, arr] of [['x', ring.x_last], ['y', ring.y_last], ['z', ring.z_last]]) {
     let min = Infinity, max = -Infinity, sum = 0, sqSum = 0, count = 0;
-    for (let i = 0; i < n; i++) {
+    for (let i = i0; i < n; i++) {
       const v = arr[i];
       if (v == null) continue;
       if (v < min) min = v;
