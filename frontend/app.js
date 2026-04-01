@@ -148,6 +148,18 @@ function createChartWindow(type, opts = {}) {
   canvas.className = 'chart-window-canvas';
 
   el.appendChild(titlebar);
+
+  // Live values panel for raw waveform
+  if (type === 'raw') {
+    const valuesDiv = document.createElement('div');
+    valuesDiv.className = 'raw-values-info';
+    valuesDiv.innerHTML =
+      '<span class="rv-item"><span class="rv-label leg-x">X:</span> <span class="rv-value" data-axis="x">—</span></span>' +
+      '<span class="rv-item"><span class="rv-label leg-y">Y:</span> <span class="rv-value" data-axis="y">—</span></span>' +
+      '<span class="rv-item"><span class="rv-label leg-z">Z:</span> <span class="rv-value" data-axis="z">—</span></span>';
+    el.appendChild(valuesDiv);
+  }
+
   el.appendChild(canvas);
 
   // Legend for raw waveform
@@ -892,6 +904,13 @@ function handleFrame(msg) {
   }
 
   // Update all raw windows
+  // Get latest values for display
+  const n = ring.t.length;
+  const latestX = n > 0 ? ring.x_last[n - 1] : null;
+  const latestY = n > 0 ? ring.y_last[n - 1] : null;
+  const latestZ = n > 0 ? ring.z_last[n - 1] : null;
+  const fmtVal = (v) => v != null ? v.toFixed(3) : '—';
+
   const plotData = _buildRawPlotData();
   for (const win of Object.values(_chartWindows)) {
     if (win.type === 'raw' && win.plot) {
@@ -903,6 +922,14 @@ function handleFrame(msg) {
         }
       }
       win.plot.setData(plotData);
+
+      // Update live values
+      const vp = win.el.querySelector('.raw-values-info');
+      if (vp) {
+        vp.querySelector('[data-axis="x"]').textContent = fmtVal(latestX);
+        vp.querySelector('[data-axis="y"]').textContent = fmtVal(latestY);
+        vp.querySelector('[data-axis="z"]').textContent = fmtVal(latestZ);
+      }
     }
   }
 }
