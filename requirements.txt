@@ -5,3 +5,4 @@ protobuf>=4.25,<5
 numpy>=1.24
 zeroconf>=0.131
 h5py>=3.10
+matplotlib>=3.7

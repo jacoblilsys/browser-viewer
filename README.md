@@ -122,8 +122,46 @@ The backend accumulates full-rate samples (e.g. 26.7 kHz) and sends a downsample
 
 Toggle between formats in the chart toolbar dropdown (while not actively logging).
 
-- **TSV** (`.log`) — Tab-separated values. Human-readable, open in any text editor or spreadsheet.
-- **HDF5** (`.h5`) — Chunked + gzip compressed. Read with Python (`h5py`, `scipy`), MATLAB, R, Julia. Includes metadata attributes (sample rate, units, device ID).
+- **TSV** (`.log`) — Tab-separated values. Human-readable, open in any text editor or spreadsheet. Includes comment header with device ID, sample rate, and units.
+- **HDF5** (`.h5`) — Chunked + gzip compressed (float32). Read with Python (`h5py`, `scipy`), MATLAB, R, Julia. Includes metadata attributes and FFT data.
+
+### HDF5 file structure
+
+```
+/ (root)
+├── attrs: device_id, stream_uid, sample_rate_hz, created_at
+├── data/
+│   ├── accel_x     (N,)        float32  — raw samples, attrs: unit
+│   ├── accel_y     (N,)        float32
+│   └── accel_z     (N,)        float32
+└── fft/                                  — present when FFT streaming is active
+    ├── attrs: fft_bins, fft_size, unit
+    ├── freq_hz     (bins,)     float32  — frequency axis
+    ├── mag_x       (M, bins)   float32  — magnitude spectra (M frames × bins)
+    ├── mag_y       (M, bins)   float32
+    ├── mag_z       (M, bins)   float32
+    ├── psd_x       (M, bins)   float32  — power spectral density
+    ├── psd_y       (M, bins)   float32
+    └── psd_z       (M, bins)   float32
+```
+
+### 3D FFT viewer
+
+A standalone tool for visualizing FFT data from HDF5 log files:
+
+```bash
+python view_fft3d.py logs/yourfile.h5 --axis x
+```
+
+Generates a 3D surface plot and a 2D spectrogram heatmap (saved as PNG). Options:
+
+| Option | Description |
+|--------|-------------|
+| `--axis x\|y\|z` | Which axis to plot (default: x) |
+| `--psd` | Plot PSD instead of magnitude |
+| `--log` | Log scale |
+| `--max-frames 500` | Limit frames for performance |
+| `--colormap plasma` | Any matplotlib colormap |
 
 ## REST API
 
