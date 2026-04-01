@@ -303,11 +303,10 @@ body.light .chart-window.focused {
   background: var(--card);
 }
 .rv-table {
-  width: 100%;
   border-collapse: collapse;
-  font-size: .78rem;
+  font-size: .88rem;
   font-family: 'Cascadia Code', 'Fira Code', monospace;
-  line-height: 1.2;
+  line-height: 1.3;
 }
 .rv-table th {
   font-weight: 700;

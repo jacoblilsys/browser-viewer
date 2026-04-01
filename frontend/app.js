@@ -157,7 +157,6 @@ function createChartWindow(type, opts = {}) {
       '<table class="rv-table"><thead>' +
       '<tr><th></th><th class="leg-x">X</th><th class="leg-y">Y</th><th class="leg-z">Z</th></tr>' +
       '</thead><tbody>' +
-      '<tr><td class="rv-label">Last</td><td class="rv-val" data-s="last-x">—</td><td class="rv-val" data-s="last-y">—</td><td class="rv-val" data-s="last-z">—</td></tr>' +
       '<tr><td class="rv-label">Min</td><td class="rv-val" data-s="min-x">—</td><td class="rv-val" data-s="min-y">—</td><td class="rv-val" data-s="min-z">—</td></tr>' +
       '<tr><td class="rv-label">Max</td><td class="rv-val" data-s="max-x">—</td><td class="rv-val" data-s="max-y">—</td><td class="rv-val" data-s="max-z">—</td></tr>' +
       '<tr><td class="rv-label">Avg</td><td class="rv-val" data-s="avg-x">—</td><td class="rv-val" data-s="avg-y">—</td><td class="rv-val" data-s="avg-z">—</td></tr>' +
@@ -966,7 +965,6 @@ function _updateRawStats() {
     if (!vp) continue;
     for (const axis of ['x', 'y', 'z']) {
       const s = stats[axis];
-      vp.querySelector(`[data-s="last-${axis}"]`).textContent = s ? f(s.last) : '—';
       vp.querySelector(`[data-s="min-${axis}"]`).textContent  = s ? f(s.min) : '—';
       vp.querySelector(`[data-s="max-${axis}"]`).textContent  = s ? f(s.max) : '—';
       vp.querySelector(`[data-s="avg-${axis}"]`).textContent  = s ? f(s.avg) : '—';
