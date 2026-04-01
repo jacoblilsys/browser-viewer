@@ -9,6 +9,7 @@ Utils/Console/commands/cmd_scan.py.
 import logging
 import socket
 import threading
+import time
 from typing import Optional
 
 from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf
@@ -33,6 +34,9 @@ def _ip_str(raw: bytes) -> str:
     return socket.inet_ntoa(raw)
 
 
+_DEVICE_TTL = 30  # seconds — remove devices not seen for this long
+
+
 class MDNSScanner:
     def __init__(self):
         self._devices: dict[str, dict] = {}   # keyed by service name
@@ -54,8 +58,19 @@ class MDNSScanner:
             _log.info('mDNS scanner stopped')
 
     def get_devices(self) -> list[dict]:
+        now = time.monotonic()
         with self._lock:
-            return list(self._devices.values())
+            # Prune stale devices
+            stale = [name for name, d in self._devices.items()
+                     if now - d.get('_seen', 0) > _DEVICE_TTL]
+            for name in stale:
+                removed = self._devices.pop(name)
+                _log.info('Sensor expired (not seen for %ds): %s',
+                          _DEVICE_TTL, removed.get('mac', '?'))
+            return [
+                {k: v for k, v in d.items() if not k.startswith('_')}
+                for d in self._devices.values()
+            ]
 
     def _on_change(self, zeroconf: Zeroconf, service_type: str,
                    name: str, state_change: ServiceStateChange):
@@ -92,6 +107,7 @@ class MDNSScanner:
             'sensor_id': _get_txt(txt, 'sensor_id'),
         }
 
+        entry['_seen'] = time.monotonic()
         with self._lock:
             is_new = name not in self._devices
             self._devices[name] = entry
