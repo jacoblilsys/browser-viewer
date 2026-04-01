@@ -249,9 +249,6 @@ class Broadcaster:
         if fft is None:
             return
 
-        if self._paused:
-            return  # dirty flag already cleared; skip send
-
         msg = json.dumps({
             'type':           'fft',
             'fft_bins':       fft.fft_bins,
