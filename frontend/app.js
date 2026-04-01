@@ -189,10 +189,13 @@ function createChartWindow(type, opts = {}) {
     el.appendChild(scrubber);
   }
 
-  // Resize handle
-  const resizeHandle = document.createElement('div');
-  resizeHandle.className = 'chart-window-resize';
-  el.appendChild(resizeHandle);
+  // Edge/corner resize handles
+  for (const edge of ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']) {
+    const h = document.createElement('div');
+    h.className = `cw-edge cw-edge-${edge}`;
+    h.dataset.edge = edge;
+    el.appendChild(h);
+  }
 
   chartsArea.appendChild(el);
 
@@ -214,8 +217,8 @@ function createChartWindow(type, opts = {}) {
   // ── Drag ──
   _setupDrag(titlebar, win);
 
-  // ── Resize ──
-  _setupResize(resizeHandle, win);
+  // ── Resize from all edges/corners ──
+  el.querySelectorAll('.cw-edge').forEach(h => _setupEdgeResize(h, win));
 
   // ── Focus on click ──
   el.addEventListener('mousedown', () => {
@@ -280,24 +283,42 @@ function _setupDrag(handle, win) {
   });
 }
 
-function _setupResize(handle, win) {
-  let startX, startY, origW, origH;
+function _setupEdgeResize(handle, win) {
+  const edge = handle.dataset.edge;
+  const resizeN = edge.includes('n');
+  const resizeS = edge.includes('s');
+  const resizeW = edge.includes('w');
+  const resizeE = edge.includes('e');
 
   handle.addEventListener('mousedown', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    startX = e.clientX;
-    startY = e.clientY;
-    origW = win.w;
-    origH = win.h;
+    const startX = e.clientX, startY = e.clientY;
+    const origX = win.x, origY = win.y, origW = win.w, origH = win.h;
+    const areaW = chartsArea.clientWidth;
+    const areaH = chartsArea.clientHeight;
 
     const onMove = (e) => {
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
-      const areaW = chartsArea.clientWidth;
-      const areaH = chartsArea.clientHeight;
-      win.w = Math.max(200, Math.min(origW + dx, areaW - win.x));
-      win.h = Math.max(140, Math.min(origH + dy, areaH - win.y));
+
+      if (resizeE) win.w = Math.max(200, Math.min(origW + dx, areaW - win.x));
+      if (resizeS) win.h = Math.max(140, Math.min(origH + dy, areaH - win.y));
+      if (resizeW) {
+        const newW = Math.max(200, origW - dx);
+        win.x = origX + origW - newW;
+        win.w = newW;
+        if (win.x < 0) { win.w += win.x; win.x = 0; }
+      }
+      if (resizeN) {
+        const newH = Math.max(140, origH - dy);
+        win.y = origY + origH - newH;
+        win.h = newH;
+        if (win.y < 0) { win.h += win.y; win.y = 0; }
+      }
+
+      win.el.style.left   = win.x + 'px';
+      win.el.style.top    = win.y + 'px';
       win.el.style.width  = win.w + 'px';
       win.el.style.height = win.h + 'px';
       if (win.plot && win.canvas.clientWidth > 0) {
@@ -308,8 +329,11 @@ function _setupResize(handle, win) {
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      win.x = snap(win.x); win.y = snap(win.y);
       win.w = snap(Math.max(200, win.w));
       win.h = snap(Math.max(140, win.h));
+      win.el.style.left   = win.x + 'px';
+      win.el.style.top    = win.y + 'px';
       win.el.style.width  = win.w + 'px';
       win.el.style.height = win.h + 'px';
       if (win.plot && win.canvas.clientWidth > 0) {

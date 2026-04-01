@@ -407,20 +407,16 @@ body.light .chart-window.focused {
 }
 .zoom-hint[hidden] { display: none; }
 
-/* Resize handle */
-.chart-window-resize {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 14px;
-  height: 14px;
-  cursor: nwse-resize;
-  background: linear-gradient(135deg, transparent 50%, var(--border) 50%);
-  border-radius: 0 0 var(--radius) 0;
-}
-.chart-window-resize:hover {
-  background: linear-gradient(135deg, transparent 50%, var(--accent) 50%);
-}
+/* Edge/corner resize handles — invisible hit areas */
+.cw-edge { position: absolute; z-index: 2; }
+.cw-edge-n  { top: -3px;    left: 6px;   right: 6px;  height: 6px;  cursor: ns-resize; }
+.cw-edge-s  { bottom: -3px; left: 6px;   right: 6px;  height: 6px;  cursor: ns-resize; }
+.cw-edge-w  { left: -3px;   top: 6px;    bottom: 6px; width: 6px;   cursor: ew-resize; }
+.cw-edge-e  { right: -3px;  top: 6px;    bottom: 6px; width: 6px;   cursor: ew-resize; }
+.cw-edge-nw { top: -3px;    left: -3px;  width: 10px; height: 10px; cursor: nwse-resize; }
+.cw-edge-ne { top: -3px;    right: -3px; width: 10px; height: 10px; cursor: nesw-resize; }
+.cw-edge-sw { bottom: -3px; left: -3px;  width: 10px; height: 10px; cursor: nesw-resize; }
+.cw-edge-se { bottom: -3px; right: -3px; width: 10px; height: 10px; cursor: nwse-resize; }
 
 .uplot { width: 100% !important; height: 100% !important; }
 
