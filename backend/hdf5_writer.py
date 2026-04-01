@@ -92,13 +92,16 @@ class Hdf5Writer:
 
     def write_fft(self, fft: FFTFrameData):
         """Append one FFT snapshot. Stored as /fft/mag_<axis> and /fft/psd_<axis>."""
-        key = (fft.device_id, fft.stream_uid)
-
-        if key not in self._files:
-            # No raw data file open yet — skip FFT (we need a file first)
-            return
-
-        hf = self._files[key]
+        # FFT stream_uid differs from raw stream_uid — find file by device_id
+        hf = None
+        key = None
+        for k, f in self._files.items():
+            if k[0] == fft.device_id:
+                hf = f
+                key = k
+                break
+        if hf is None:
+            return  # no raw data file open yet
 
         # Create /fft group and datasets on first FFT frame
         if key not in self._fft_init:
