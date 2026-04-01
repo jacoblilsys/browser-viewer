@@ -167,11 +167,12 @@ function createChartWindow(type, opts = {}) {
 
   el.appendChild(canvas);
 
-  // Legend for raw waveform
+  // Legend + zoom hint for raw waveform
   if (type === 'raw') {
     const legend = document.createElement('div');
     legend.className = 'chart-window-legend';
-    legend.innerHTML = '<span class="leg-x">— X</span><span class="leg-y">— Y</span><span class="leg-z">— Z</span>';
+    legend.innerHTML = '<span class="leg-x">— X</span><span class="leg-y">— Y</span><span class="leg-z">— Z</span>' +
+      '<span class="zoom-hint" hidden>Zoomed — double-click to reset</span>';
     el.appendChild(legend);
   }
 
@@ -714,6 +715,14 @@ function _createRawPlot(w, h, canvas) {
     cursor: { show: true, drag: { x: true, y: true } },
     legend: { show: false },
     plugins: [wheelZoomPlugin()],
+    hooks: {
+      setScale: [(_self, key) => {
+        if (key === 'x') {
+          _rawStatsTimer = 0;  // force immediate stats update
+          _updateRawStats();
+        }
+      }],
+    },
     axes: [
       { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: _GRID },
       { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: _GRID_Y },
@@ -940,9 +949,35 @@ function _updateRawStats() {
   const n = ring.t.length;
   if (n === 0) return;
 
-  // Compute over the visible window (or all data in burst mode)
-  let i0 = 0;
-  if (!_burstFFT) {
+  // Determine visible X range — check if any raw window is zoomed
+  let xMin = -Infinity, xMax = Infinity;
+  let isZoomed = false;
+  for (const win of Object.values(_chartWindows)) {
+    if (win.type === 'raw' && win.plot && win.plot.scales) {
+      const sx = win.plot.scales.x;
+      if (sx.min != null && sx.max != null) {
+        const dataMin = ring.t[0];
+        const dataMax = ring.t[n - 1];
+        // Consider zoomed if scale is noticeably narrower than data range
+        if ((sx.max - sx.min) < (dataMax - dataMin) * 0.95) {
+          xMin = sx.min;
+          xMax = sx.max;
+          isZoomed = true;
+        }
+      }
+      // Show/hide zoom hint
+      const hint = win.el.querySelector('.zoom-hint');
+      if (hint) hint.hidden = !isZoomed;
+      break; // use first raw window's zoom state
+    }
+  }
+
+  // Compute stats over visible range
+  let i0 = 0, iEnd = n;
+  if (isZoomed) {
+    for (let i = 0; i < n; i++) { if (ring.t[i] >= xMin) { i0 = i; break; } }
+    for (let i = n - 1; i >= i0; i--) { if (ring.t[i] <= xMax) { iEnd = i + 1; break; } }
+  } else if (!_burstFFT) {
     const tNow = ring.t[n - 1];
     const tCut = tNow - windowSec;
     for (let i = 0; i < n; i++) { if (ring.t[i] >= tCut) { i0 = i; break; } }
@@ -951,7 +986,7 @@ function _updateRawStats() {
   const stats = {};
   for (const [key, arr] of [['x', ring.x_last], ['y', ring.y_last], ['z', ring.z_last]]) {
     let min = Infinity, max = -Infinity, sum = 0, sqSum = 0, count = 0;
-    for (let i = i0; i < n; i++) {
+    for (let i = i0; i < iEnd; i++) {
       const v = arr[i];
       if (v == null) continue;
       if (v < min) min = v;

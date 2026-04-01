@@ -399,6 +399,14 @@ body.light .chart-window.focused {
 .leg-y { color: var(--y); }
 .leg-z { color: var(--z); }
 
+.zoom-hint {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: .78rem;
+  font-style: italic;
+}
+.zoom-hint[hidden] { display: none; }
+
 /* Resize handle */
 .chart-window-resize {
   position: absolute;
