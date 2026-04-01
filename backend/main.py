@@ -189,6 +189,13 @@ async def _drain_queue():
         elif isinstance(result, FFTFrameData):
             _stats['fft_frames'] += 1
             _last_device_id = result.device_id
+
+            if _logging_on:
+                try:
+                    _log_writer.write_fft(result)
+                except Exception as e:
+                    _log.warning('log_writer fft failed: %s', e)
+
             await _broadcaster.push_fft(result)
 
 

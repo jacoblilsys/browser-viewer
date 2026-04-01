@@ -16,7 +16,7 @@ from typing import Dict, Optional
 import h5py
 import numpy as np
 
-from protobuf_decoder import FrameData
+from protobuf_decoder import FrameData, FFTFrameData
 
 
 class Hdf5Writer:
@@ -24,6 +24,7 @@ class Hdf5Writer:
         self.output_dir = output_dir
         self._files: Dict[tuple, h5py.File] = {}
         self._headers: Dict[tuple, list] = {}
+        self._fft_init: Dict[tuple, bool] = {}  # whether /fft group exists
 
     def write(self, frame: FrameData):
         key = (frame.device_id, frame.stream_uid)
@@ -89,11 +90,63 @@ class Hdf5Writer:
         self._headers[key] = ordered
         self._files[key] = hf
 
+    def write_fft(self, fft: FFTFrameData):
+        """Append one FFT snapshot. Stored as /fft/mag_<axis> and /fft/psd_<axis>."""
+        key = (fft.device_id, fft.stream_uid)
+
+        if key not in self._files:
+            # No raw data file open yet — skip FFT (we need a file first)
+            return
+
+        hf = self._files[key]
+
+        # Create /fft group and datasets on first FFT frame
+        if key not in self._fft_init:
+            grp = hf.require_group('fft')
+            grp.attrs['fft_bins'] = fft.fft_bins
+            grp.attrs['fft_size'] = fft.fft_size
+            grp.attrs['unit'] = fft.unit
+            # Store frequency axis once
+            grp.create_dataset('freq_hz', data=np.array(fft.freq_hz, dtype=np.float32))
+
+            for axis in fft.magnitudes:
+                nbins = len(fft.magnitudes[axis])
+                grp.create_dataset(
+                    f'mag_{axis}', shape=(0, nbins), maxshape=(None, nbins),
+                    dtype=np.float32, chunks=(64, nbins),
+                    compression='gzip', compression_opts=4,
+                )
+            for axis in fft.psd:
+                nbins = len(fft.psd[axis])
+                grp.create_dataset(
+                    f'psd_{axis}', shape=(0, nbins), maxshape=(None, nbins),
+                    dtype=np.float32, chunks=(64, nbins),
+                    compression='gzip', compression_opts=4,
+                )
+            self._fft_init[key] = True
+
+        grp = hf['fft']
+        for axis, data in fft.magnitudes.items():
+            ds_name = f'mag_{axis}'
+            if ds_name in grp:
+                ds = grp[ds_name]
+                n = ds.shape[0]
+                ds.resize((n + 1, ds.shape[1]))
+                ds[n, :] = np.array(data, dtype=np.float32)
+        for axis, data in fft.psd.items():
+            ds_name = f'psd_{axis}'
+            if ds_name in grp:
+                ds = grp[ds_name]
+                n = ds.shape[0]
+                ds.resize((n + 1, ds.shape[1]))
+                ds[n, :] = np.array(data, dtype=np.float32)
+
     def close_all(self):
         for hf in self._files.values():
             hf.close()
         self._files.clear()
         self._headers.clear()
+        self._fft_init.clear()
 
     @property
     def is_logging(self) -> bool:

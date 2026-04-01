@@ -110,6 +110,13 @@ class LogManager:
             self._writer = self._create_writer()
         self._writer.write(frame)
 
+    def write_fft(self, fft):
+        """Write FFT data (HDF5 only)."""
+        if self._fmt != 'hdf5' or self._writer is None:
+            return
+        if hasattr(self._writer, 'write_fft'):
+            self._writer.write_fft(fft)
+
     def close_all(self):
         if self._writer is not None:
             self._writer.close_all()
