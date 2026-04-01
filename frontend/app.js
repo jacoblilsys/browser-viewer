@@ -13,7 +13,7 @@
 
 // ── config ────────────────────────────────────────────────────────────────────
 const WS_URL      = `ws://${location.host}/ws`;
-const MAX_PTS     = 6000;
+// No fixed MAX_PTS — ring is trimmed by time window in handleFrame
 const RECONNECT_MS = 2000;
 
 // ── state ─────────────────────────────────────────────────────────────────────
@@ -904,8 +904,12 @@ function handleFrame(msg) {
     ring.z_last.push(zLast);
   }
 
-  while (ring.t.length > MAX_PTS) {
-    for (const k of Object.keys(ring)) ring[k].shift();
+  // Trim ring to visible window + small margin (not during burst)
+  if (ring.t.length > 0 && !_burstFFT) {
+    const tKeep = ring.t[ring.t.length - 1] - windowSec - 1;
+    while (ring.t.length > 1 && ring.t[0] < tKeep) {
+      for (const k of Object.keys(ring)) ring[k].shift();
+    }
   }
 
   // Update all raw windows
@@ -936,11 +940,13 @@ function _updateRawStats() {
   const n = ring.t.length;
   if (n === 0) return;
 
-  // Only compute over the visible window
-  const tNow = ring.t[n - 1];
-  const tCut = tNow - windowSec;
+  // Compute over the visible window (or all data in burst mode)
   let i0 = 0;
-  for (let i = 0; i < n; i++) { if (ring.t[i] >= tCut) { i0 = i; break; } }
+  if (!_burstFFT) {
+    const tNow = ring.t[n - 1];
+    const tCut = tNow - windowSec;
+    for (let i = 0; i < n; i++) { if (ring.t[i] >= tCut) { i0 = i; break; } }
+  }
 
   const stats = {};
   for (const [key, arr] of [['x', ring.x_last], ['y', ring.y_last], ['z', ring.z_last]]) {
@@ -1079,6 +1085,10 @@ function handleBurst(msg) {
       win.plot.setData(plotData);
     }
   }
+
+  // Force stats update with burst data (no throttle)
+  _rawStatsTimer = 0;
+  _updateRawStats();
 
   const btn = document.getElementById('btn-burst');
   btn.disabled = false;
