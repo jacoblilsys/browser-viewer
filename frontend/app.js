@@ -149,14 +149,20 @@ function createChartWindow(type, opts = {}) {
 
   el.appendChild(titlebar);
 
-  // Live values panel for raw waveform
+  // Live values + stats panel for raw waveform
   if (type === 'raw') {
     const valuesDiv = document.createElement('div');
     valuesDiv.className = 'raw-values-info';
     valuesDiv.innerHTML =
-      '<span class="rv-item"><span class="rv-label leg-x">X:</span> <span class="rv-value" data-axis="x">—</span></span>' +
-      '<span class="rv-item"><span class="rv-label leg-y">Y:</span> <span class="rv-value" data-axis="y">—</span></span>' +
-      '<span class="rv-item"><span class="rv-label leg-z">Z:</span> <span class="rv-value" data-axis="z">—</span></span>';
+      '<table class="rv-table"><thead>' +
+      '<tr><th></th><th class="leg-x">X</th><th class="leg-y">Y</th><th class="leg-z">Z</th></tr>' +
+      '</thead><tbody>' +
+      '<tr><td class="rv-label">Last</td><td class="rv-val" data-s="last-x">—</td><td class="rv-val" data-s="last-y">—</td><td class="rv-val" data-s="last-z">—</td></tr>' +
+      '<tr><td class="rv-label">Min</td><td class="rv-val" data-s="min-x">—</td><td class="rv-val" data-s="min-y">—</td><td class="rv-val" data-s="min-z">—</td></tr>' +
+      '<tr><td class="rv-label">Max</td><td class="rv-val" data-s="max-x">—</td><td class="rv-val" data-s="max-y">—</td><td class="rv-val" data-s="max-z">—</td></tr>' +
+      '<tr><td class="rv-label">Avg</td><td class="rv-val" data-s="avg-x">—</td><td class="rv-val" data-s="avg-y">—</td><td class="rv-val" data-s="avg-z">—</td></tr>' +
+      '<tr><td class="rv-label">RMS</td><td class="rv-val" data-s="rms-x">—</td><td class="rv-val" data-s="rms-y">—</td><td class="rv-val" data-s="rms-z">—</td></tr>' +
+      '</tbody></table>';
     el.appendChild(valuesDiv);
   }
 
@@ -904,13 +910,6 @@ function handleFrame(msg) {
   }
 
   // Update all raw windows
-  // Get latest values for display
-  const n = ring.t.length;
-  const latestX = n > 0 ? ring.x_last[n - 1] : null;
-  const latestY = n > 0 ? ring.y_last[n - 1] : null;
-  const latestZ = n > 0 ? ring.z_last[n - 1] : null;
-  const fmtVal = (v) => v != null ? v.toFixed(3) : '—';
-
   const plotData = _buildRawPlotData();
   for (const win of Object.values(_chartWindows)) {
     if (win.type === 'raw' && win.plot) {
@@ -922,14 +921,56 @@ function handleFrame(msg) {
         }
       }
       win.plot.setData(plotData);
+    }
+  }
 
-      // Update live values
-      const vp = win.el.querySelector('.raw-values-info');
-      if (vp) {
-        vp.querySelector('[data-axis="x"]').textContent = fmtVal(latestX);
-        vp.querySelector('[data-axis="y"]').textContent = fmtVal(latestY);
-        vp.querySelector('[data-axis="z"]').textContent = fmtVal(latestZ);
-      }
+  // Throttled stats update (~2 Hz)
+  _updateRawStats();
+}
+
+let _rawStatsTimer = 0;
+function _updateRawStats() {
+  const now = performance.now();
+  if (now - _rawStatsTimer < 500) return;
+  _rawStatsTimer = now;
+
+  const n = ring.t.length;
+  if (n === 0) return;
+
+  const stats = {};
+  for (const [key, arr] of [['x', ring.x_last], ['y', ring.y_last], ['z', ring.z_last]]) {
+    let min = Infinity, max = -Infinity, sum = 0, sqSum = 0, count = 0;
+    for (let i = 0; i < n; i++) {
+      const v = arr[i];
+      if (v == null) continue;
+      if (v < min) min = v;
+      if (v > max) max = v;
+      sum += v;
+      sqSum += v * v;
+      count++;
+    }
+    if (count > 0) {
+      stats[key] = {
+        last: arr[n - 1],
+        min, max,
+        avg: sum / count,
+        rms: Math.sqrt(sqSum / count),
+      };
+    }
+  }
+
+  const f = (v) => v != null ? v.toFixed(3) : '—';
+  for (const win of Object.values(_chartWindows)) {
+    if (win.type !== 'raw') continue;
+    const vp = win.el.querySelector('.raw-values-info');
+    if (!vp) continue;
+    for (const axis of ['x', 'y', 'z']) {
+      const s = stats[axis];
+      vp.querySelector(`[data-s="last-${axis}"]`).textContent = s ? f(s.last) : '—';
+      vp.querySelector(`[data-s="min-${axis}"]`).textContent  = s ? f(s.min) : '—';
+      vp.querySelector(`[data-s="max-${axis}"]`).textContent  = s ? f(s.max) : '—';
+      vp.querySelector(`[data-s="avg-${axis}"]`).textContent  = s ? f(s.avg) : '—';
+      vp.querySelector(`[data-s="rms-${axis}"]`).textContent  = s ? f(s.rms) : '—';
     }
   }
 }

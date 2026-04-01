@@ -298,26 +298,38 @@ body.light .chart-window.focused {
 
 /* ── raw values info panel ─────────────────────────────────────────────────── */
 .raw-values-info {
-  display: flex;
-  gap: 1.2rem;
-  padding: .3rem .6rem;
-  font-size: .88rem;
-  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  padding: .2rem .4rem;
   flex-shrink: 0;
   background: var(--card);
 }
-.raw-values-info .rv-item {
-  display: flex;
-  gap: .3rem;
+.rv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .78rem;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  line-height: 1.2;
 }
-.raw-values-info .rv-label {
+.rv-table th {
+  font-weight: 700;
+  text-align: right;
+  padding: 0 .4rem;
+  font-size: .8rem;
+}
+.rv-table td {
+  padding: 0 .4rem;
+}
+.rv-table .rv-label {
+  color: var(--muted);
   font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  width: 2.5rem;
 }
-.raw-values-info .rv-value {
+.rv-table .rv-val {
   color: var(--text);
   font-weight: 600;
-  min-width: 5.5rem;
   text-align: right;
+  white-space: nowrap;
 }
 
 /* ── time sync window ─────────────────────────────────────────────────────── */
