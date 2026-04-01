@@ -99,8 +99,20 @@ def main():
 
     f.close()
 
-    plt.tight_layout()
-    plt.show()
+    # Save to files and try to show
+    out_base = args.file.rsplit('.', 1)[0]
+    fig1.tight_layout()
+    fig1.savefig(f'{out_base}_3d_{args.axis}.png', dpi=150)
+    print(f'Saved: {out_base}_3d_{args.axis}.png')
+
+    fig2.tight_layout()
+    fig2.savefig(f'{out_base}_spectrogram_{args.axis}.png', dpi=150)
+    print(f'Saved: {out_base}_spectrogram_{args.axis}.png')
+
+    try:
+        plt.show()
+    except Exception:
+        pass
 
 
 if __name__ == '__main__':
