@@ -4,7 +4,7 @@ One file per (device_id, stream_uid); datasets created on first packet.
 Filename: {mac}_{uid}_{YYYYMMDD_HHMMSS}.h5
 
 Structure:
-    /data/<col>     — float64 datasets, chunked + gzip compressed
+    /data/<col>     — float32 datasets, chunked + gzip compressed
     root attrs:     device_id, stream_uid, sample_rate_hz, created_at
     dataset attrs:  unit
 """
@@ -42,7 +42,7 @@ class Hdf5Writer:
             ds = grp[col]
             old_len = ds.shape[0]
             ds.resize((old_len + len(arr),))
-            ds[old_len:] = arr
+            ds[old_len:] = arr.astype(np.float32)
 
     def _open(self, frame: FrameData, key: tuple):
         os.makedirs(self.output_dir, exist_ok=True)
@@ -77,10 +77,10 @@ class Hdf5Writer:
                 col,
                 shape=(0,),
                 maxshape=(None,),
-                dtype=np.float64,
-                chunks=(8192,),
+                dtype=np.float32,
+                chunks=(16384,),
                 compression='gzip',
-                compression_opts=1,  # fast compression
+                compression_opts=4,
             )
             unit = frame.units.get(col, '')
             if unit:

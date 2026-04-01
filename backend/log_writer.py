@@ -67,6 +67,11 @@ class TsvWriter:
 
         self._headers[key] = ordered
         self._files[key] = fh
+        # Metadata header
+        fh.write(f'# device_id={frame.device_id}\n')
+        fh.write(f'# stream_uid={frame.stream_uid}\n')
+        fh.write(f'# sample_rate_hz={frame.sample_rate_hz}\n')
+        fh.write(f'# units={",".join(frame.units.get(c,"") for c in ordered)}\n')
         fh.write('\t'.join(ordered) + '\n')
 
     def close_all(self):
