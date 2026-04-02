@@ -30,6 +30,8 @@ def main():
                         help='Use log scale for magnitude/PSD')
     parser.add_argument('--colormap', '-c', default='viridis',
                         help='Matplotlib colormap (default: viridis)')
+    parser.add_argument('--smooth', '-s', type=int, default=3,
+                        help='Interpolation factor for smooth surface (1=raw, 3=default, 5=very smooth)')
     args = parser.parse_args()
 
     f = h5py.File(args.file, 'r')
@@ -74,12 +76,28 @@ def main():
     frame_idx = np.arange(n_frames)
     freq_grid, frame_grid = np.meshgrid(freq[:n_bins], frame_idx)
 
-    # ── Plot 1: 3D surface ──
+    # ── Plot 1: 3D surface (smoothly interpolated) ──
+    from scipy.ndimage import zoom
+
+    # Upsample both axes for a smooth continuous surface
+    smooth = args.smooth
+    if smooth > 1:
+        data_smooth = zoom(data, (smooth, smooth), order=3)
+        freq_smooth = np.linspace(freq[0], freq[min(n_bins, len(freq)) - 1],
+                                  data_smooth.shape[1])
+        frame_smooth = np.linspace(0, n_frames - 1, data_smooth.shape[0])
+    else:
+        data_smooth = data
+        freq_smooth = freq[:n_bins]
+        frame_smooth = frame_idx
+
+    freq_g, frame_g = np.meshgrid(freq_smooth, frame_smooth)
+
     fig1 = plt.figure(figsize=(14, 8))
     ax1 = fig1.add_subplot(111, projection='3d')
-    ax1.plot_surface(freq_grid, frame_grid, data,
-                     cmap=args.colormap, linewidth=0, antialiased=False,
-                     rcount=min(n_frames, 200), ccount=min(n_bins, 200))
+    ax1.plot_surface(freq_g, frame_g, data_smooth,
+                     cmap=args.colormap, linewidth=0, antialiased=True,
+                     shade=True)
     ax1.set_xlabel('Frequency (Hz)')
     ax1.set_ylabel('Frame')
     z_label = f'{"PSD" if args.psd else "Magnitude"} ({"log " if args.log else ""}{unit})'

@@ -246,7 +246,7 @@ class Broadcaster:
             fft = self._fft_frame
             self._fft_dirty = False
 
-        if fft is None:
+        if fft is None or self._paused:
             return
 
         msg = json.dumps({

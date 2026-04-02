@@ -41,7 +41,7 @@ _TCP_HOST   = '0.0.0.0'
 _TCP_PORT   = int(os.environ.get('TCP_PORT', '8066'))
 _LOG_DIR    = os.environ.get('LOG_DIR', './logs')
 _WS_FPS     = int(os.environ.get('WS_FPS', '60'))
-_NETWORK_IF = os.environ.get('NETWORK_IF', '')
+_NETWORK_IF = os.environ.get('NETWORK_IF', '').strip()
 _FRONTEND   = Path(__file__).parent.parent / 'frontend'
 
 
@@ -78,7 +78,7 @@ _queue:    asyncio.Queue = asyncio.Queue(maxsize=4096)
 _receiver: Optional[NetworkReceiver] = None
 _broadcaster  = Broadcaster(fps=_WS_FPS)
 _log_writer   = LogManager(output_dir=_LOG_DIR)
-_mdns         = MDNSScanner()
+_mdns         = MDNSScanner(interface_ip=_NETWORK_IF)
 _logging_on   = False
 
 # ── counters ──────────────────────────────────────────────────────────────────

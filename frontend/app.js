@@ -1045,11 +1045,6 @@ function _updateRawStats() {
 }
 
 function handleFFT(msg) {
-  // Live FFT clears burst scrubber state
-  if (_burstFFT) {
-    _burstFFT = null;
-    _showBurstScrubbers();
-  }
 
   let freq = msg.freq_hz;
   const mags = msg.magnitudes;
@@ -1510,6 +1505,11 @@ document.getElementById('btn-test-ntp').addEventListener('click', () => {
 });
 
 document.getElementById('btn-stream-start').addEventListener('click', async () => {
+  // Clear burst review state so live FFT updates resume
+  if (_burstFFT) {
+    _burstFFT = null;
+    _showBurstScrubbers();
+  }
   const r = await fetch('/api/stream/start', { method: 'POST' });
   const d = await r.json();
   outInfo.textContent = JSON.stringify(d, null, 2);
@@ -1726,6 +1726,7 @@ document.querySelectorAll('input[name="setup-ip-mode"]').forEach(r => {
   r.addEventListener('change', _updateRescueCmd);
 });
 document.getElementById('setup-static-ip').addEventListener('input', _updateRescueCmd);
+inPw.addEventListener('input', _updateRescueCmd);
 
 // Copy rescue command to clipboard
 document.getElementById('btn-copy-cmd').addEventListener('click', () => {

@@ -66,11 +66,26 @@ def _detect_interface():
             ['netsh', 'interface', 'ipv4', 'show', 'interfaces'],
             text=True, timeout=5
         )
+        # Parse netsh output: each data line has the pattern
+        #   <idx> <metric> <mtu> connected <name>
+        # Use regex to extract metric and name from connected interfaces.
+        best = None
+        best_metric = 9999
+        skip = {'loopback', 'pseudo', 'vethernet'}
+        pattern = re.compile(
+            r'^\s*\d+\s+(\d+)\s+\d+\s+connected\s+(.+?)\s*$', re.IGNORECASE
+        )
         for line in out.strip().split('\n'):
-            parts = line.split()
-            if len(parts) >= 4 and parts[-2] == 'connected':
-                return ' '.join(parts[3:])
-        return 'Ethernet'
+            m = pattern.match(line)
+            if not m:
+                continue
+            metric, name = int(m.group(1)), m.group(2)
+            if any(s in name.lower() for s in skip):
+                continue
+            if metric < best_metric:
+                best_metric = metric
+                best = name
+        return best or 'Ethernet'
     elif _PLATFORM == 'Darwin':
         # macOS: parse default route for interface name
         out = subprocess.check_output(['route', '-n', 'get', 'default'], text=True, timeout=5)
@@ -98,7 +113,18 @@ def _add_link_local_ip(iface, ip='169.254.99.1'):
         )
     else:
         subprocess.check_call(['ip', 'addr', 'add', f'{ip}/16', 'dev', iface], timeout=5)
-    time.sleep(0.5)  # let the OS register the route
+    # Wait for the OS to make the address bindable (Windows can be slow).
+    for attempt in range(20):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.bind((ip, 0))
+            s.close()
+            print(f'  Address ready (after {0.5 * (attempt + 1):.1f}s)')
+            break
+        except OSError:
+            time.sleep(0.5)
+    else:
+        print(f'  Warning: address {ip} not bindable after 10s — continuing anyway')
 
 
 def _remove_link_local_ip(iface, ip='169.254.99.1'):
@@ -185,13 +211,9 @@ def _send_command(target_ip, mac_str, password, local_ip, **config_kwargs):
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
-
-    local_if = socket.inet_aton(local_ip)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, local_if)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
-                    socket.inet_aton('224.0.0.251') + local_if)
     sock.settimeout(_TIMEOUT)
+    # Bind to the local IP so the packet goes out the correct interface.
+    # No multicast setup needed — this is a direct unicast send.
     sock.bind((local_ip, 0))
 
     try:

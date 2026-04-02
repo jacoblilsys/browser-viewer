@@ -38,7 +38,7 @@ def _safe_enum_name(enum_type, value, extensions=None):
 _UDP_PORT           = 56671
 _MULTICAST_ADDR     = '224.0.0.251'
 _RESPONSE_TIMEOUT_S = 10.0
-_NETWORK_IF         = os.environ.get('NETWORK_IF', '')
+_NETWORK_IF         = os.environ.get('NETWORK_IF', '').strip()
 
 # Request header: header_size(4) + mac(6) + req_id(4) + hmac(16) = 30 bytes
 _REQ_HDR_FMT  = '<I6sI16s'

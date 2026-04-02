@@ -34,28 +34,65 @@ def _ip_str(raw: bytes) -> str:
     return socket.inet_ntoa(raw)
 
 
-_DEVICE_TTL = 30  # seconds — remove devices not seen for this long
+_DEVICE_TTL    = 120  # seconds — remove devices not seen for this long
+_REQUERY_INTERVAL = 30  # seconds — actively re-query known services
 
 
 class MDNSScanner:
-    def __init__(self):
+    def __init__(self, interface_ip: str = ''):
         self._devices: dict[str, dict] = {}   # keyed by service name
         self._lock = threading.Lock()
         self._zc: Optional[Zeroconf] = None
         self._browser: Optional[ServiceBrowser] = None
+        self._interface_ip = interface_ip  # bind mDNS to this IP ('' = all)
+        self._requery_stop: Optional[threading.Event] = None
+        self._requery_thread: Optional[threading.Thread] = None
 
     def start(self):
-        self._zc = Zeroconf()
+        if self._interface_ip:
+            self._zc = Zeroconf(interfaces=[self._interface_ip])
+            _log.info('mDNS scanner bound to %s', self._interface_ip)
+        else:
+            self._zc = Zeroconf()
         self._browser = ServiceBrowser(
             self._zc, SERVICE_TYPE, handlers=[self._on_change])
         _log.info('mDNS scanner started for %s', SERVICE_TYPE)
+        # Start periodic re-query thread to keep devices alive on Windows
+        self._requery_stop = threading.Event()
+        self._requery_thread = threading.Thread(
+            target=self._requery_loop, daemon=True, name='mdns-requery')
+        self._requery_thread.start()
 
     def stop(self):
+        if self._requery_stop:
+            self._requery_stop.set()
         if self._zc:
             self._zc.close()
             self._zc = None
             self._browser = None
             _log.info('mDNS scanner stopped')
+
+    def _requery_loop(self):
+        """Periodically re-query known services to refresh _seen timestamps.
+
+        On Windows, zeroconf often misses passive mDNS announcements when bound
+        to a specific interface.  This active polling keeps devices alive.
+        """
+        while not self._requery_stop.wait(_REQUERY_INTERVAL):
+            with self._lock:
+                names = list(self._devices.keys())
+            if not names or not self._zc:
+                continue
+            for name in names:
+                try:
+                    info = self._zc.get_service_info(SERVICE_TYPE, name, timeout=3000)
+                    if info:
+                        # Trigger the same update path as the browser callback
+                        self._on_change(
+                            self._zc, SERVICE_TYPE, name,
+                            ServiceStateChange.Updated)
+                except Exception:
+                    pass
 
     def get_devices(self) -> list[dict]:
         now = time.monotonic()

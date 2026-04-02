@@ -44,6 +44,7 @@ All settings are via environment variables. Defaults are sensible for typical us
 
 ### Examples
 
+**Linux / macOS:**
 ```bash
 # Default settings (60 Hz broadcast, TCP port 8066)
 uvicorn main:app --host 0.0.0.0 --port 8000
@@ -54,8 +55,28 @@ WS_FPS=120 uvicorn main:app --host 0.0.0.0 --port 8000
 # Custom TCP port and log directory
 TCP_PORT=9000 LOG_DIR=/data/logs uvicorn main:app --host 0.0.0.0 --port 8000
 
+# Force a specific network interface (e.g. LAN instead of WiFi)
+NETWORK_IF=192.168.0.200 uvicorn main:app --host 0.0.0.0 --port 8000
+
 # Auto-reload during development
 uvicorn main:app --reload --port 8000
+```
+
+**Windows (cmd):**
+```cmd
+:: Default settings
+uvicorn main:app --host 0.0.0.0 --port 8000
+
+:: Force a specific network interface (e.g. LAN instead of WiFi)
+set NETWORK_IF=192.168.0.200 && uvicorn main:app --host 0.0.0.0 --port 8000
+
+:: Multiple environment variables
+set NETWORK_IF=192.168.0.200 && set WS_FPS=120 && uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:NETWORK_IF="192.168.0.200"; uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 ### Broadcast rate (`WS_FPS`)
