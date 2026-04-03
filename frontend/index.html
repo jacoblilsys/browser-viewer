@@ -38,6 +38,13 @@
         <span id="lbl-ws" title="Browser-to-backend WebSocket connection status">Connecting…</span>
       </div>
       <div class="chart-controls">
+        <select id="sel-layout" class="layout-select" title="Quick layout preset — creates and arranges windows automatically">
+          <option value="" disabled selected>Layout</option>
+          <option value="raw-fft">Raw + FFT</option>
+          <option value="raw-fft-psd">Raw + FFT + PSD</option>
+          <option value="raw-only">Raw Only</option>
+          <option value="fft-only">FFT X/Y/Z</option>
+        </select>
         <button id="btn-add-window" class="btn btn-primary" title="Open a new chart window — choose from Raw Waveform, FFT, or PSD views">+ New Window</button>
         <button id="btn-tile-grid" class="btn" title="Auto-arrange all open windows into an even grid layout">Tile Grid</button>
         <button id="btn-tile-vertical" class="btn" title="Stack all open windows vertically at full width">Tile Vertical</button>

@@ -190,7 +190,8 @@ body.light .settings-toggle {
   font-size: .92rem;
 }
 
-.log-format-select {
+.log-format-select,
+.layout-select {
   background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -791,7 +792,8 @@ body.light .chart-controls .btn.btn-primary {
   background: #2a9960;
   border-color: #2a9960;
 }
-body.light .chart-controls .log-format-select {
+body.light .chart-controls .log-format-select,
+body.light .chart-controls .layout-select {
   background: #3a5070;
   border-color: #4a6080;
   color: #fff;

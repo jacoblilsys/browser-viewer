@@ -348,8 +348,29 @@ function _setupEdgeResize(handle, win) {
 }
 
 // ── Tile windows ─────────────────────────────────────────────────────────────
+// Sort windows by WINDOW_TYPES definition order
+function _sortedWins() {
+  const order = Object.keys(WINDOW_TYPES);
+  return Object.values(_chartWindows).sort((a, b) =>
+    order.indexOf(a.type) - order.indexOf(b.type)
+  );
+}
+
+function _applyLayout(win, x, y, w, h) {
+  const pad = 4;
+  win.x = x + pad; win.y = y + pad;
+  win.w = w - pad * 2; win.h = h - pad * 2;
+  win.el.style.left   = win.x + 'px';
+  win.el.style.top    = win.y + 'px';
+  win.el.style.width  = win.w + 'px';
+  win.el.style.height = win.h + 'px';
+  if (win.plot) {
+    win.plot.setSize({ width: win.canvas.clientWidth, height: win.canvas.clientHeight });
+  }
+}
+
 function tileWindows() {
-  const wins = Object.values(_chartWindows);
+  const wins = _sortedWins();
   if (wins.length === 0) return;
   const areaW = chartsArea.clientWidth;
   const areaH = chartsArea.clientHeight;
@@ -378,7 +399,7 @@ function tileWindows() {
 }
 
 function tileWindowsVertical() {
-  const wins = Object.values(_chartWindows);
+  const wins = _sortedWins();
   if (wins.length === 0) return;
   const areaW = chartsArea.clientWidth;
   const areaH = chartsArea.clientHeight;
@@ -399,6 +420,87 @@ function tileWindowsVertical() {
     }
   });
   _saveWindowState();
+}
+
+// ── Layout presets ───────────────────────────────────────────────────────────
+function _clearAllWindows() {
+  for (const id of Object.keys(_chartWindows)) destroyChartWindow(id);
+}
+
+const LAYOUT_PRESETS = {
+  'raw-fft': {
+    label: 'Raw + FFT',
+    windows: ['raw', 'fftX', 'fftY', 'fftZ', 'timeSync'],
+    arrange(wins, W, H) {
+      // 40% raw, 40% FFT×3, 20% time sync (half width)
+      const r1H = Math.round(H * 0.4);
+      const r2H = Math.round(H * 0.4);
+      const r3H = H - r1H - r2H;
+      const colW = Math.round(W / 3);
+      _applyLayout(wins[0], 0, 0, W, r1H);              // Raw full width
+      _applyLayout(wins[1], 0, r1H, colW, r2H);          // FFT X
+      _applyLayout(wins[2], colW, r1H, colW, r2H);       // FFT Y
+      _applyLayout(wins[3], colW * 2, r1H, W - colW * 2, r2H); // FFT Z
+      _applyLayout(wins[4], 0, r1H + r2H, Math.round(W / 2), r3H); // Time Sync
+    },
+  },
+  'raw-fft-psd': {
+    label: 'Raw + FFT + PSD',
+    windows: ['raw', 'fftX', 'fftY', 'fftZ', 'psdX', 'psdY', 'psdZ'],
+    arrange(wins, W, H) {
+      const r1H = Math.round(H * 0.34);
+      const r2H = Math.round(H * 0.33);
+      const r3H = H - r1H - r2H;
+      const colW = Math.round(W / 3);
+      _applyLayout(wins[0], 0, 0, W, r1H);
+      _applyLayout(wins[1], 0, r1H, colW, r2H);
+      _applyLayout(wins[2], colW, r1H, colW, r2H);
+      _applyLayout(wins[3], colW * 2, r1H, W - colW * 2, r2H);
+      _applyLayout(wins[4], 0, r1H + r2H, colW, r3H);
+      _applyLayout(wins[5], colW, r1H + r2H, colW, r3H);
+      _applyLayout(wins[6], colW * 2, r1H + r2H, W - colW * 2, r3H);
+    },
+  },
+  'raw-only': {
+    label: 'Raw Only',
+    windows: ['raw'],
+    arrange(wins, W, H) {
+      _applyLayout(wins[0], 0, 0, W, H);
+    },
+  },
+  'fft-only': {
+    label: 'FFT X/Y/Z',
+    windows: ['fftX', 'fftY', 'fftZ'],
+    arrange(wins, W, H) {
+      const cellH = Math.round(H / 3);
+      _applyLayout(wins[0], 0, 0, W, cellH);
+      _applyLayout(wins[1], 0, cellH, W, cellH);
+      _applyLayout(wins[2], 0, cellH * 2, W, H - cellH * 2);
+    },
+  },
+};
+
+function applyLayoutPreset(presetId) {
+  const preset = LAYOUT_PRESETS[presetId];
+  if (!preset) return;
+
+  _clearAllWindows();
+
+  const wins = [];
+  for (const type of preset.windows) {
+    const win = createChartWindow(type);
+    if (win) wins.push(win);
+  }
+
+  // Apply layout after plots are created
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const W = chartsArea.clientWidth;
+      const H = chartsArea.clientHeight;
+      preset.arrange(wins, W, H);
+      _saveWindowState();
+    });
+  });
 }
 
 // ── Spectrogram renderer ─────────────────────────────────────────────────────
@@ -820,6 +922,12 @@ popupOverlay.addEventListener('click', (e) => {
 
 document.getElementById('btn-tile-grid').addEventListener('click', tileWindows);
 document.getElementById('btn-tile-vertical').addEventListener('click', tileWindowsVertical);
+
+document.getElementById('sel-layout').addEventListener('change', (e) => {
+  const val = e.target.value;
+  if (val) applyLayoutPreset(val);
+  e.target.selectedIndex = 0;  // reset to "Layout" placeholder
+});
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function connect() {
