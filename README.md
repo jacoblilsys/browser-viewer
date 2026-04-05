@@ -21,12 +21,22 @@ Protocol definitions: [lillie-protobuf](https://github.com/jacoblilsys/lillie-pr
 cd Utils/browser_viewer/backend
 
 # Create virtual environment (first time only)
+
+
+# For linux
 python3 -m venv ~/venv-browser-viewer
 source ~/venv-browser-viewer/bin/activate
 pip install -r ../requirements.txt
 
+#For Window CMD
+python3 -m venv ~\venv-browser-viewer
+~\venv-browser-viewer\Scripts\activate.bat
+pip install -r ..\requirements.txt
+
+
 # Run
 uvicorn main:app --host 0.0.0.0 --port 8000
+
 ```
 
 Then open `http://localhost:8000` in a browser.
@@ -92,9 +102,9 @@ The backend accumulates full-rate samples (e.g. 26.7 kHz) and sends a downsample
 ## Architecture
 
 ```
-┌──────────┐  TCP/protobuf  ┌──────────────┐  asyncio.Queue  ┌───────────┐
+┌──────────┐  TCP/protobuf  ┌───────────────┐  asyncio.Queue  ┌───────────┐
 │  Sensor  │ ──────────────►│NetworkReceiver│ ──────────────► │drain_queue│
-└──────────┘   port 8066    └──────────────┘                  └─────┬─────┘
+└──────────┘   port 8066    └───────────────┘                 └─────┬─────┘
                                                                     │
                                                           ┌─────────┼─────────┐
                                                           ▼         ▼         ▼
@@ -103,10 +113,10 @@ The backend accumulates full-rate samples (e.g. 26.7 kHz) and sends a downsample
                                                           │
                                                     WebSocket
                                                           │
-                                                    ┌─────▼─────┐
+                                                    ┌─────▼──────┐
                                                     │  Browser   │
                                                     │  (uPlot)   │
-                                                    └───────────┘
+                                                    └────────────┘
 ```
 
 - **NetworkReceiver** — TCP listener in a background thread. Frames are length-prefixed (4-byte big-endian uint32 + protobuf payload).
@@ -239,11 +249,13 @@ chronyc tracking
 Windows has a built-in NTP server (w32time):
 
 ```cmd
-:: Run as Administrator
+# Run as Administrator
 w32tm /config /reliable:YES
-net stop w32time && net start w32time
+net stop w32time
+# wait for the service to stop...
+net start w32time
 
-:: Verify
+# Verify
 w32tm /query /status
 ```
 
@@ -279,3 +291,25 @@ sudo ip addr add 192.168.0.200/24 dev eth0
 ```
 
 Or use the `setup_sensor.py` rescue tool for link-local sensors — see [setup_sensor.py](setup_sensor.py).
+
+
+### Quick Guide
+After opening the browser, start by inputting the default password: lilliesystems26 in the password field. 
+
+![alt text](initial_steps.webp)
+
+If the device shows up in the Devices on Network then click the setup button. 
+
+![alt text](sensor_setup.png)
+Clicking Apply Setup will configure the sensor with the host Server Ip so the sensor can start streaming data and communicate. 
+
+DHCP is enabled by default in the sensor. If no DHCP is available, it will fall back to a link local address. In this case your network card must be configured for a link local subnet in order for it to setup a static IP. 
+
+Expanding the Network Config dropdown and pressing Get Config will receive the network settings. Make sure the Server IP is correcly configured. 
+
+![alt text](network_config.png)
+
+Expanding the Sensor Config dropdown shows the different configurations such as full scale range, Output Data Rate (ODR) and filter and FFT selections. 
+![alt text](sensor_config.png)
+
+## Trouble shooting
