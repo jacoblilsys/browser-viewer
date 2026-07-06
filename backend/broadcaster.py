@@ -50,6 +50,9 @@ class Broadcaster:
         self._burst_start_time: float = 0.0
         self._burst_fft_frames: list = []
         self._was_paused: bool = False
+        # How long past the requested duration to wait before force-ending a
+        # burst whose frames stopped/never arrived (sensor not connected).
+        self._burst_grace: float = 1.5
 
     # ── client management ────────────────────────────────────────────────────
 
@@ -142,7 +145,14 @@ class Broadcaster:
                     'unit':       fft.unit,
                 })
 
-    async def _finish_burst(self, frame: FrameData):
+    async def _finish_burst(self, frame: Optional[FrameData] = None):
+        if not self._burst_active:
+            return  # already finished/cancelled (guards the timeout vs push race)
+        frame = frame or self._last_frame
+        if frame is None:
+            # No frame metadata at all — nothing was captured; cancel cleanly.
+            await self.cancel_burst(reason='timeout')
+            return
         self._burst_active = False
         # Keep streaming paused after burst so data isn't immediately overwritten.
         # User clicks Stream ▶ to resume when done inspecting.
@@ -160,6 +170,33 @@ class Broadcaster:
         self._burst_fft_frames = []
         await self._broadcast(msg)
 
+    async def cancel_burst(self, reason: str = 'cancelled'):
+        """Abort an in-progress burst (user cancel, or a timeout with no data)
+        and tell clients to reset the capture button. Safe to call any time."""
+        self._burst_active = False
+        self._burst_samples = {}
+        self._burst_fft_frames = []
+        self._burst_t_start_ns = 0
+        self._paused = self._was_paused   # restore the pre-burst streaming state
+        await self._broadcast(json.dumps({
+            'type': 'burst', 'cancelled': True, 'reason': reason,
+        }))
+
+    async def _check_burst_timeout(self):
+        """Frame-independent backstop: end a burst that ran past its deadline
+        without the frame-driven path finishing it (frames stopped or the
+        sensor never connected). Runs every broadcast tick."""
+        if not self._burst_active:
+            return
+        if time.monotonic() - self._burst_start_time < self._burst_duration + self._burst_grace:
+            return
+        async with self._lock:
+            have_data = self._last_frame is not None and any(self._burst_samples.values())
+        if have_data:
+            await self._finish_burst()          # emit whatever partial data we got
+        else:
+            await self.cancel_burst(reason='timeout')
+
     # ── broadcast loop ───────────────────────────────────────────────────────
 
     def start(self):
@@ -169,6 +206,7 @@ class Broadcaster:
     async def _loop(self):
         while True:
             t0 = time.monotonic()
+            await self._check_burst_timeout()
             await self._emit()
             elapsed = time.monotonic() - t0
             await asyncio.sleep(max(0.0, self._interval - elapsed))

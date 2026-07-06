@@ -4,7 +4,7 @@
 
 Real-time browser-based vibration sensor viewer for the [A2E-TRI Accelerometer](https://lilliesystems.com/products/a2e-tri/) from [Lillie Systems](https://lilliesystems.com).
 
-Receives protobuf-framed acceleration data over TCP, displays live waveforms and FFT/PSD spectra, and provides sensor configuration via a web UI.
+Receives protobuf-framed acceleration data over TCP **or UDP**, displays live waveforms and FFT/PSD spectra (Q15 or **float32** precision, with a log-scale option), and provides sensor configuration via a web UI.
 
 Protocol definitions: [lillie-protobuf](https://github.com/jacoblilsys/lillie-protobuf)
 
@@ -38,6 +38,7 @@ All settings are via environment variables. Defaults are sensible for typical us
 | Variable     | Default  | Description                                                              |
 |--------------|----------|--------------------------------------------------------------------------|
 | `TCP_PORT`   | `8066`   | TCP port the backend listens on for sensor data                          |
+| `UDP_PORT`   | *(= `TCP_PORT`)* | UDP port the backend listens on for sensor data. Defaults to `TCP_PORT` — the sensor sends UDP to the same `server_port` it uses for TCP. TCP and UDP share the port number without conflict. |
 | `LOG_DIR`    | `./logs` | Directory where log files (TSV/HDF5) are written                         |
 | `WS_FPS`     | `60`     | WebSocket broadcast rate in frames per second                            |
 | `NETWORK_IF` | *(auto)* | Local IP of the network interface to use for sensor UDP/multicast commands. Auto-detected if not set. Set this if sensor API commands time out (e.g. `NETWORK_IF=192.168.0.200`). |
@@ -110,7 +111,8 @@ The backend accumulates full-rate samples (e.g. 26.7 kHz) and sends a downsample
 ```
 
 - **NetworkReceiver** — TCP listener in a background thread. Frames are length-prefixed (4-byte big-endian uint32 + protobuf payload).
-- **protobuf_decoder** — Decodes protobuf into `FrameData` (numpy arrays per axis) and `FFTFrameData`.
+- **UDPReceiver** — UDP listener in a background thread (bound to `UDP_PORT`). Each datagram carries a 12-byte chunk header (`packet_id`, `chunk_idx`, `chunk_count`, `chunk_size`, `total_size`); chunks are reassembled by `(source_ip, packet_id)` into the same length-prefixed frame the TCP path produces, then fed to the identical decoder. Lost/timed-out packets are counted and surfaced as diagnostics. Runs alongside TCP — either stream (raw / FFT) can be TCP or UDP independently.
+- **protobuf_decoder** — Decodes protobuf into `FrameData` (numpy arrays per axis) and `FFTFrameData`. FFT bins are decoded per-column from their `MetaData` dtype (`data_numpy_type`/`data_numpy_bytes`): Q15 signed int16, Q15 unsigned uint16 (vector modes), or IEEE-754 float32.
 - **Broadcaster** — Accumulates samples, emits min/max/last per axis at `WS_FPS` Hz via WebSocket. FFT spectra are throttled to 30 Hz. Supports pause/resume to stop sending data to browsers without affecting logging.
 - **LogWriter / LogManager** — Full-rate logging to TSV or HDF5 (selectable in the UI).
 - **MDNSScanner** — Discovers sensors on the network via `_nw-config._udp.local.` mDNS service.
@@ -119,13 +121,14 @@ The backend accumulates full-rate samples (e.g. 26.7 kHz) and sends a downsample
 ## Browser UI
 
 - **Topbar** — Company logo, app title, server IP:port, light/dark theme toggle
-- **Chart toolbar** — New window, tile grid/vertical, time window selector, log format, start/stop logging, clear, live stats (packets/frames/samples/FFT), console toggle
-- **Charts area** — Floating draggable/resizable windows with snap-to-grid (60px). Create any combination of:
+- **Chart toolbar** — New window, tile grid/vertical, log format, start/stop logging, clear, live stats (packets/frames/samples/FFT/UDP-lost), console toggle, **Monitor** toggle
+- **Charts area** — Floating draggable/resizable windows with snap-to-grid (60px). Each chart window's titlebar has a **⚙ settings** button housing all per-window options — Y-axis scale (auto/fixed), log magnitude scale (FFT/PSD/spectrogram), and window length (raw). Create any combination of:
   - Raw Waveform (XYZ) — live acceleration traces
   - FFT (X/Y/Z) — frequency spectrum per axis, X-axis scaled by actual sample rate
-  - PSD (X/Y/Z) — power spectral density per axis
-- **Sidebar** — Device list (auto-discovered via mDNS), selected sensor controls, sensor config, FFT config, network config
+  - PSD (X/Y/Z) — power spectral density per axis, `(m/s²)²/Hz`. Computed as a **one-sided, Hann-windowed, density-scaled periodogram** (`S_k = 2·|X_k|²/(fs·Σw²)`, factor 1 at DC) — matching `scipy.signal.periodogram(x, fs, window='hann', scaling='density')`, so levels agree with an FFT computed directly from the raw samples.
+- **Sidebar** — Device list (auto-discovered via mDNS), selected sensor controls (incl. live CPU load, firmware debug string, and runtime FFT ▶/■), sensor config (full scale, axes, ODR, filter, FFT size, and Q15/float32 FFT precision), network config (incl. per-stream TCP/UDP transport)
 - **Floating console** — Toggleable JSON output window for sensor API responses
+- **Traffic Monitor** (`Monitor` toggle) — a floating panel showing per-stream health: RAW and FFT **received vs missing** frames (missing inferred from `sequence_number` gaps, so it works over both TCP and UDP), loss %, rates, and transport; plus UDP link stats (datagrams, packets reassembled, lost packets/chunks). **Enabling it pauses chart streaming to the browser** (the backend keeps receiving, counting, and logging) to minimize load — ideal for long logging runs where you only want to watch for dropouts. Logging works normally in this mode. The panel's **Reset** zeroes all counters (base + per-stream + UDP).
 
 ### Window management
 
@@ -133,11 +136,32 @@ The backend accumulates full-rate samples (e.g. 26.7 kHz) and sends a downsample
 - **Tile Vertical** — Stacks all windows vertically at full width
 - **Snap-to-grid** — Windows snap to a 60px grid on drag/resize release
 - **Bounds clamping** — Windows cannot be dragged or resized beyond the charts area
+- **Per-window settings (⚙)** — Each window has its own settings, opened from the gear in its titlebar:
+  - **Y-axis scale** (raw/FFT/PSD) — *Auto* (fits the data every frame, default) or *Fixed* (a min/max you set, so the trace stops jumping). "Fit to data" seeds the min/max from what's currently shown. Fixed values are in the plotted units and respect the log toggle.
+  - **Log magnitude scale** (FFT/PSD/spectrogram) — reveals small signals far below the peaks (needed to see float32's dynamic range).
+  - **Window length** (raw windows) — how many seconds of waveform to show on the X-axis, per window. (This replaced the old global toolbar selector.)
 
 ### Stream control
 
 - **Stream Start/Stop** — Pauses/resumes data broadcast to the browser. The backend continues receiving and logging data regardless. No sensor selection required.
-- **FFT Start/Stop** — Runtime toggle for FFT streaming from the sensor (requires sensor selection).
+- **FFT ▶/■** (in Selected Sensor) — Runtime command to the sensor to start/stop FFT streaming *now* (`Command.stream_fft`), no reboot. This is distinct from **Network Config → FFT Stream**, which is the persistent boot default applied on reboot. Requires sensor selection.
+
+## Transport (TCP / UDP)
+
+Each stream — raw samples and FFT — can be delivered over TCP or UDP, set independently in **Network Config** (`Raw Transport`, `FFT Transport`). TCP is the legacy reliable stream; UDP sends the same frames as 12-byte-header chunks that the backend reassembles.
+
+- The setting is **persisted on the sensor and applied on its next reboot** — power-cycle the sensor after Apply.
+- The backend always listens on both TCP and UDP (`UDP_PORT`, default = `TCP_PORT`), so no host restart is needed when switching.
+- The **UDP-lost** counter in the toolbar shows chunks dropped during reassembly (stays 0 on TCP). Non-zero values indicate packet loss on the link.
+
+## FFT precision (Q15 / Float32)
+
+In **Sensor Config**, `FFT Precision` selects the on-device FFT numeric format (read with Get Config, written with Apply, alongside the other sensor settings):
+
+- **Q15** — int16, 2 bytes/bin, ~90 dB dynamic range (legacy default).
+- **Float32** — IEEE-754, 4 bytes/bin, ~144 dB. Reveals spectral content near the sensor's ~75 µg/√Hz noise floor that Q15 rounds to zero. Roughly doubles FFT bandwidth.
+
+The change takes effect immediately (the sensor drops one FFT frame during the switch — no reboot). The backend detects the format per-column from frame metadata, so no host setting is required. Turn on **Log magnitude scale** in a window's **⚙ settings** to actually see float32's extra dynamic range.
 
 ## Logging formats
 

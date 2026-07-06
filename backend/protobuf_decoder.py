@@ -321,52 +321,89 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
                   device_id, stream_uid, fft_size, fft_bins,
                   fft.actual_frame_rate_hz, len(fft.meta_data))
 
-    # Build per-axis scaling from MetaData
-    # Map axis from MetaData.data_axis → 'x'/'y'/'z'
-    axis_names = []
-    scale_factors = []
+    # Build per-axis column descriptors from MetaData.
+    #
+    # Columns are concatenated in metadata order. Each column carries its own
+    # dtype via data_numpy_type / data_numpy_bytes / data_numpy_endian, so we
+    # must NOT assume a fixed 2 bytes/bin: the firmware may ship Q15 signed
+    # int16 (2 B), Q15 unsigned uint16 (vector modes, 2 B), or IEEE-754 float32
+    # (4 B, ~144 dB dynamic range). Different axes could in principle differ,
+    # so each column is decoded on its own dtype.
+    #
+    # descriptor tuple: (axis_name, np.dtype, bytes_per_bin, scale_factor)
+    columns: list = []
     unit = 'm/s²'
     for md in fft.meta_data:
-        axis_label = _DATA_AXIS_STR.get(md.data_axis, 'x')
-        axis_names.append(axis_label)
-        sf = _scale_factor(md) * fft_size  # Q15 compensation
-        scale_factors.append(sf)
+        name = _DATA_AXIS_STR.get(md.data_axis, 'x')
+        kind = _NUMPY_KIND.get(md.data_numpy_type, 'i')          # default int16 (legacy Q15 signed)
+        endian = _NUMPY_ENDIAN.get(md.data_numpy_endian, '<')
+        per_bin = md.data_numpy_bytes or 2
+        dtype = np.dtype(f'{endian}{kind}{per_bin}')
+        is_float = (md.data_numpy_type == NumpyType.NUMPY_TYPE_FLOATING_POINT)
+        # _scale_factor(md) is the firmware-documented conversion
+        # (float_factor × 10^si_unit_scaling_base10_exp; float_factor is
+        # identical for both precisions). The extra × fft_size cancels the
+        # CMSIS `arm_rfft_q15` internal 1/N block-float scaling; the float32
+        # engine (`arm_rfft_fast_f32`) is un-scaled, so float32 gets no ×fft_size.
+        # Confirmed by firmware: float32 FFT output is un-scaled (see the FFT
+        # scaling note); f32_mag_at_bin == fft_size × q15_mag_at_bin for the same input.
+        sf = _scale_factor(md)
+        if not is_float:
+            sf *= fft_size  # Q15/uint16 block-float compensation (int paths only)
         u = _UNIT_STR.get(md.data_unit, '')
         if u:
             unit = u
+        columns.append((name, dtype, per_bin, sf))
 
-    num_axes_meta = len(axis_names) or 1
+    if not columns:
+        # Legacy fallback: no metadata → assume int16 Q15 columns for x/y/z,
+        # derived from payload length (preserves pre-metadata behaviour).
+        default_axes = ['x', 'y', 'z']
+        n = len(raw_payload) // (fft_bins * 2)
+        for i in range(n):
+            name = default_axes[i] if i < len(default_axes) else f'ch{i}'
+            columns.append((name, np.dtype('<i2'), 2, float(fft_size)))
 
-    # Derive actual axis count from payload size — firmware may send fewer
-    # axes than meta_data entries (e.g. single-axis mode with 3 metadata)
-    bytes_per_axis = fft_bins * 2
-    num_axes = len(raw_payload) // bytes_per_axis if bytes_per_axis > 0 else 0
-    if num_axes == 0:
-        _log.warning('FFT payload too short for even 1 axis: %d bytes, %d bins',
-                     len(raw_payload), fft_bins)
-        return None
-    if num_axes < num_axes_meta:
-        # Trim metadata to match actual payload
-        axis_names = axis_names[:num_axes]
-        scale_factors = scale_factors[:num_axes]
-
-    all_mags = np.frombuffer(raw_payload[:num_axes * bytes_per_axis], dtype='<i2').astype(np.float64)
-
-    magnitudes: Dict[str, list] = {}
-    psd: Dict[str, list] = {}
     # Prefer _sample_rate from raw FrameData (actual measured rate) over the
     # FFT header's nominal rate, which firmware may not update correctly.
     fft_rate = _sample_rate if _sample_rate != 26667.0 else (
         fft.actual_frame_rate_hz if fft.actual_frame_rate_hz > 0 else _sample_rate
     )
-    # PSD normalisation: freq_resolution = fs / fft_size
-    freq_res = fft_rate / fft_size  # Hz per bin
-    for i, (name, sf) in enumerate(zip(axis_names, scale_factors)):
-        raw_slice = all_mags[i * fft_bins:(i + 1) * fft_bins]
+    # One-sided power spectral density (periodogram), matching
+    #   scipy.signal.periodogram(x, fs, window='hann', scaling='density'):
+    #     S_k = 2 * |X_k|^2 / (fs * Σw²)        [factor 1 at DC / Nyquist]
+    # `scaled` (below) is |X_k| in m/s² — the device's un-normalised windowed
+    # DFT magnitude, correctly calibrated by the sensor. Only this normalisation
+    # was wrong before: it used |X|²/Δf, overstating the level by ~(3/16)·N².
+    # Verified against the ~75 µg/√Hz noise floor → correct floor ≈ 5.4e-7
+    # (m/s²)²/Hz. The device applies a Hann window (firmware note 2026-07-02);
+    # a periodic Hann of length N has Σw² = 3N/8.
+    win_power = (3.0 / 8.0) * fft_size            # Σ w_n²  (periodic Hann)
+    psd_scale = 2.0 / (fft_rate * win_power)       # one-sided density scale
+    psd_bin_scale = np.full(fft_bins, psd_scale)
+    psd_bin_scale[0] = psd_scale / 2.0            # DC bin: factor 1, not 2
+    # (Nyquist is not present — fft_bins = N/2 covers k = 0..N/2-1.)
+
+    magnitudes: Dict[str, list] = {}
+    psd: Dict[str, list] = {}
+    # Walk the payload column by column at a running offset — firmware may send
+    # fewer axes than meta_data entries (e.g. single-axis mode with 3 metadata).
+    offset = 0
+    for name, dtype, per_bin, sf in columns:
+        col_bytes = fft_bins * per_bin
+        if col_bytes <= 0 or offset + col_bytes > len(raw_payload):
+            break
+        raw_slice = np.frombuffer(raw_payload[offset:offset + col_bytes], dtype=dtype).astype(np.float64)
+        offset += col_bytes
         scaled = raw_slice * sf
         magnitudes[name] = scaled.tolist()
-        # PSD = magnitude² / freq_resolution  → (unit)²/Hz
-        psd[name] = (scaled * scaled / freq_res).tolist()
+        # PSD = 2·|X_k|² / (fs·Σw²)  → (unit)²/Hz  (one-sided, Hann-corrected)
+        psd[name] = (scaled * scaled * psd_bin_scale).tolist()
+
+    if not magnitudes:
+        _log.warning('FFT payload too short for even 1 axis: %d bytes, %d bins',
+                     len(raw_payload), fft_bins)
+        return None
 
     # Frequency axis: f[k] = k * sample_rate / fft_size
     freq_hz = [k * fft_rate / fft_size for k in range(fft_bins)]

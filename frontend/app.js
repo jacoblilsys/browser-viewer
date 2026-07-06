@@ -30,11 +30,22 @@ const ring = {
   z_last: [],
 };
 
-let windowSec = 5;
+// Default X-axis time span (seconds) for new raw windows. Each raw window can
+// override this via its per-window settings (win.windowSec).
+let _defaultWindowSec = 5;
+
+function _maxRawWindowSec() {
+  let m = 0;
+  for (const w of Object.values(_chartWindows)) {
+    if (w.type === 'raw') m = Math.max(m, w.windowSec || _defaultWindowSec);
+  }
+  return m || _defaultWindowSec;
+}
 
 // Latest FFT/PSD data (shared across all windows of that type)
 let _lastFFT = null;  // { freq_hz, magnitudes, psd, unit, fft_bins, fft_size }
 let _burstFFT = null; // { snapshots: [...], index: 0 } — set after burst capture
+let _capturing = false; // true while a burst capture is in progress (from backend status)
 
 // Time sync ring buffer
 const _timeSync = { t: [], diff_ms: [] };
@@ -51,7 +62,6 @@ const lblWs     = document.getElementById('lbl-ws');
 const btnLog    = document.getElementById('btn-log');
 const selFmt    = document.getElementById('sel-log-format');
 const btnClear  = document.getElementById('btn-clear');
-const selWindow = document.getElementById('sel-window');
 const outInfo   = document.getElementById('out-info');
 const chartsArea = document.getElementById('charts-area');
 
@@ -79,15 +89,121 @@ const WINDOW_TYPES = {
   timeSync: { label: 'Time Sync',        group: 'timesync' },
 };
 
+// ── Log-scale helpers (FFT/PSD/spectrogram) ───────────────────────────────────
+// A log magnitude scale is needed to actually see the float32 FFT's dynamic
+// range — small signals (nearby ACs, HVAC, faint mechanical vibration) that
+// Q15 rounded to zero populate many orders of magnitude below the peaks.
+const _LOG_FLOOR = 1e-9;  // floor so log10(0) → finite, avoids -Infinity
+
+// Convert a magnitude/PSD array to a dB-like log scale.
+// FFT magnitude → 20·log10, PSD (already power) → 10·log10.
+function _toLog(arr, group) {
+  const k = group === 'psd' ? 10 : 20;
+  const out = new Array(arr.length);
+  for (let i = 0; i < arr.length; i++) {
+    out[i] = k * Math.log10(Math.max(arr[i], _LOG_FLOOR));
+  }
+  return out;
+}
+
+// Resolve an axis from an {x,y,z} dict, falling back to the sole column in
+// vector modes (single unsigned column labelled by its vector axis).
+function _resolveAxisData(dict, axis) {
+  if (!dict) return null;
+  if (dict[axis]) return dict[axis];
+  const keys = Object.keys(dict);
+  if (keys.length === 1) return dict[keys[0]];
+  return null;
+}
+
+// Re-render one FFT/PSD/spectrogram window (e.g. after its log toggle changes).
+function _rerenderSpectralWindow(win) {
+  const info = WINDOW_TYPES[win.type];
+  if (!info || !win.plot) return;
+  if (info.group === 'spectrogram') {
+    win.plot._log = !!win.logScale;
+    win.plot.update(_burstFFT ? _burstFFT.snapshots : []);
+  } else if (info.group === 'fft' || info.group === 'psd') {
+    // Keep the Y-axis label in sync with log mode (dB vs linear unit).
+    if (win.plot.axes && win.plot.axes[1]) {
+      win.plot.axes[1].label = _yAxisLabel(info.group, win.logScale);
+    }
+    if (_lastFFT) {
+      const dict = info.group === 'fft' ? _lastFFT.magnitudes : _lastFFT.psd;
+      let data = _resolveAxisData(dict, info.axis);
+      if (data) {
+        if (win.logScale) data = _toLog(data, info.group);
+        win.plot.setData([_lastFFT.freq_hz, data]);
+      }
+    }
+  }
+}
+
+// ── Per-window Y-axis scaling ─────────────────────────────────────────────────
+// uPlot calls a scale's range function once per setData (per frame), NOT per
+// point — so reading win.yScale here is cheap. We close over `win`, so no DOM
+// lookup happens in the hot path; toggling a window's setting is picked up on
+// the next frame automatically.
+function _autoPadY(dMin, dMax) {
+  // Fit-to-data with ~10% headroom (mirrors uPlot's default auto feel), but
+  // version-independent so auto mode can't silently break.
+  if (dMin == null || dMax == null || !isFinite(dMin) || !isFinite(dMax)) return [dMin, dMax];
+  if (dMin === dMax) { const p = Math.abs(dMax) * 0.1 || 1; return [dMin - p, dMax + p]; }
+  const pad = (dMax - dMin) * 0.1;
+  return [dMin - pad, dMax + pad];
+}
+
+function _yRange(win, dMin, dMax) {
+  const ys = win && win.yScale;
+  if (ys && ys.mode === 'fixed' && ys.max != null && isFinite(ys.max)) {
+    const lo = (ys.min != null && isFinite(ys.min)) ? ys.min : 0;
+    return [lo, ys.max];
+  }
+  return _autoPadY(dMin, dMax);  // auto: fit data with headroom
+}
+
+// Current [min,max] of the data shown in a window — used by the settings modal's
+// "Fit to data" button to seed a sensible fixed range.
+function _currentRangeForWindow(win) {
+  const info = WINDOW_TYPES[win.type];
+  if (!info) return null;
+  let lo = Infinity, hi = -Infinity;
+  const scan = (arr) => { for (const v of arr) { if (v == null) continue; if (v < lo) lo = v; if (v > hi) hi = v; } };
+  if (info.group === 'fft' || info.group === 'psd') {
+    if (!_lastFFT) return null;
+    const dict = info.group === 'fft' ? _lastFFT.magnitudes : _lastFFT.psd;
+    let arr = _resolveAxisData(dict, info.axis);
+    if (!arr) return null;
+    if (win.logScale) arr = _toLog(arr, info.group);
+    scan(arr);
+  } else if (win.type === 'raw') {
+    scan(ring.x_last); scan(ring.y_last); scan(ring.z_last);
+  } else {
+    return null;
+  }
+  return isFinite(lo) && isFinite(hi) ? [lo, hi] : null;
+}
+
+// Re-apply a window's plot data so a settings change (Y-scale / window length)
+// takes effect immediately, without waiting for the next frame.
+function _refreshWindow(win) {
+  if (!win.plot) return;
+  try {
+    if (win.type === 'raw') win.plot.setData(_buildRawPlotData(win.windowSec));
+    else if (win.plot.data) win.plot.setData(win.plot.data);
+  } catch (e) { console.error('refresh window failed', win.type, e); }
+}
+
 // ── Floating window manager ──────────────────────────────────────────────────
-let _chartWindows = {};  // id → { id, type, el, canvas, plot, x, y, w, h }
+let _chartWindows = {};  // id → { id, type, el, canvas, plot, x, y, w, h, logScale, yScale, windowSec }
 let _nextWinId = 1;
 let _topZ = 10;
 
 function _saveWindowState() {
   const state = {};
   for (const [id, win] of Object.entries(_chartWindows)) {
-    state[id] = { id: win.id, type: win.type, x: win.x, y: win.y, w: win.w, h: win.h };
+    state[id] = { id: win.id, type: win.type, x: win.x, y: win.y, w: win.w, h: win.h,
+                  logScale: !!win.logScale, yScale: win.yScale, windowSec: win.windowSec };
   }
   localStorage.setItem('chartWindows', JSON.stringify(state));
 }
@@ -142,6 +258,23 @@ function createChartWindow(type, opts = {}) {
   closeBtn.title = 'Close';
 
   titlebar.appendChild(title);
+
+  // Settings gear — Y-scale (auto/fixed), log scale, window length. Everything
+  // configurable per window now lives in the settings modal (no separate
+  // titlebar buttons). Time-sync windows have nothing to configure.
+  if (info.group !== 'timesync') {
+    const gearBtn = document.createElement('button');
+    gearBtn.className = 'chart-window-gear';
+    gearBtn.innerHTML = '&#9881;';  // ⚙
+    gearBtn.title = 'Window settings — Y-axis scale, log scale, window length';
+    gearBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+    gearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openWindowSettings(id);
+    });
+    titlebar.appendChild(gearBtn);
+  }
+
   titlebar.appendChild(closeBtn);
 
   const canvas = document.createElement('div');
@@ -199,17 +332,25 @@ function createChartWindow(type, opts = {}) {
 
   chartsArea.appendChild(el);
 
-  const win = { id, type, el, canvas, plot: null, x: pos.x, y: pos.y, w: pos.w, h: pos.h };
+  const win = {
+    id, type, el, canvas, plot: null,
+    x: pos.x, y: pos.y, w: pos.w, h: pos.h,
+    logScale: !!pos.logScale,
+    // Per-window settings (read efficiently via closures in the plot scales).
+    yScale: (pos.yScale && pos.yScale.mode) ? { mode: pos.yScale.mode, min: pos.yScale.min ?? null, max: pos.yScale.max ?? null } : { mode: 'auto', min: null, max: null },
+    windowSec: pos.windowSec || _defaultWindowSec,
+  };
   _chartWindows[id] = win;
 
   // Create plot after a frame so the canvas has dimensions
   requestAnimationFrame(() => {
     if (info.group === 'spectrogram') {
       win.plot = _createSpectrogramPlot(canvas, info);
+      win.plot._log = !!win.logScale;
     } else if (info.group === 'timesync') {
       win.plot = _createTimeSyncPlot(canvas);
     } else {
-      win.plot = _createPlot(type, canvas, info);
+      win.plot = _createPlot(type, canvas, info, win);
     }
     _saveWindowState();
   });
@@ -531,14 +672,20 @@ function _createSpectrogramPlot(container, info) {
       const nBins = snapshots[0].fft_bins || 0;
       if (nBins === 0) return;
 
+      // Optional log-magnitude scale — reveals the float32 FFT's low-level
+      // content that a linear scale flattens against the peaks.
+      const useLog = !!obj._log;
+      const tx = useLog ? (v) => Math.log10(Math.max(v, _LOG_FLOOR)) : (v) => v;
+
       // Find global min/max for color normalization
       let gMin = Infinity, gMax = -Infinity;
       for (const snap of snapshots) {
         const mag = snap.magnitudes[axis];
         if (!mag) continue;
         for (let k = 0; k < mag.length; k++) {
-          if (mag[k] < gMin) gMin = mag[k];
-          if (mag[k] > gMax) gMax = mag[k];
+          const v = tx(mag[k]);
+          if (v < gMin) gMin = v;
+          if (v > gMax) gMax = v;
         }
       }
       if (gMax <= gMin) gMax = gMin + 1;
@@ -555,7 +702,7 @@ function _createSpectrogramPlot(container, info) {
         const mag = snapshots[row].magnitudes[axis];
         if (!mag) continue;
         for (let col = 0; col < nBins; col++) {
-          const t = (mag[col] - gMin) / (gMax - gMin);
+          const t = (tx(mag[col]) - gMin) / (gMax - gMin);
           const [r, g, b] = _viridis(t);
           const idx = (row * nBins + col) * 4;
           img.data[idx] = r; img.data[idx+1] = g; img.data[idx+2] = b; img.data[idx+3] = 255;
@@ -641,11 +788,11 @@ function _showBurstFFTFrame(index) {
     const info = WINDOW_TYPES[win.type];
     if (!info) continue;
     if (info.group === 'fft') {
-      const data = _resolveAxis(snap.magnitudes, info.axis);
-      if (data) win.plot.setData([freq, data]);
+      let data = _resolveAxis(snap.magnitudes, info.axis);
+      if (data) { if (win.logScale) data = _toLog(data, 'fft'); win.plot.setData([freq, data]); }
     } else if (info.group === 'psd') {
-      const data = _resolveAxis(snap.psd, info.axis);
-      if (data) win.plot.setData([freq, data]);
+      let data = _resolveAxis(snap.psd, info.axis);
+      if (data) { if (win.logScale) data = _toLog(data, 'psd'); win.plot.setData([freq, data]); }
     }
   }
 
@@ -772,6 +919,27 @@ const _GRID_Y = { stroke: '#334', width: 0.5 };
 function _axisStroke() { return document.body.classList.contains('light') ? '#222' : '#fff'; }
 function _tickStroke() { return document.body.classList.contains('light') ? '#bbb' : '#666'; }
 
+// Compact Y-axis tick label: scientific notation for very small / very large
+// magnitudes (e.g. PSD values ~1e-7 that otherwise round to "0" on a linear
+// axis), plain digits in between.
+function _fmtSci(v) {
+  if (v == null || !isFinite(v)) return '';
+  if (v === 0) return '0';
+  const a = Math.abs(v);
+  if (a < 1e-3 || a >= 1e5) return v.toExponential(1);   // e.g. "3.0e-7"
+  return String(+v.toPrecision(4));
+}
+const _sciYValues = (u, splits) => splits.map(_fmtSci);
+
+// Y-axis label for FFT/PSD windows. In log mode the plotted values are dB
+// (PSD: 10·log10 re 1 (m/s²)²/Hz; FFT: 20·log10 re 1 m/s²), so the label
+// must say dB — not the linear unit.
+function _yAxisLabel(group, logScale) {
+  const unit = group === 'psd' ? '(m/s²)²/Hz' : (group === 'fft' ? 'm/s²' : '');
+  if (!unit) return '';
+  return logScale ? `dB re 1 ${unit}` : unit;
+}
+
 // Wheel zoom plugin for uPlot
 function wheelZoomPlugin() {
   return {
@@ -806,14 +974,14 @@ function wheelZoomPlugin() {
   };
 }
 
-function _createPlot(type, canvas, info) {
+function _createPlot(type, canvas, info, win) {
   const w = canvas.clientWidth  || 400;
   const h = canvas.clientHeight || 200;
 
-  if (type === 'raw') return _createRawPlot(w, h, canvas);
+  if (type === 'raw') return _createRawPlot(w, h, canvas, win);
 
   // FFT or PSD — single axis line chart
-  const yLabel = info.group === 'psd' ? '(m/s\u00B2)\u00B2/Hz' : (info.group === 'fft' ? 'm/s\u00B2' : '');
+  const yLabel = _yAxisLabel(info.group, win && win.logScale);
   const color = info.color;
   const opts = {
     width: w, height: h,
@@ -823,18 +991,18 @@ function _createPlot(type, canvas, info) {
     plugins: [wheelZoomPlugin()],
     axes: [
       { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: _GRID, label: 'Hz' },
-      { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: _GRID_Y, label: yLabel },
+      { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: _GRID_Y, label: yLabel, values: _sciYValues },
     ],
     series: [
       {},
       { stroke: color, width: 1.5, paths: uPlot.paths.linear(), fill: color + '22' },
     ],
-    scales: { x: { time: false }, y: { auto: true } },
+    scales: { x: { time: false }, y: { auto: true, range: (u, dMin, dMax) => _yRange(win, dMin, dMax) } },
   };
   return new uPlot(opts, [[], []], canvas);
 }
 
-function _createRawPlot(w, h, canvas) {
+function _createRawPlot(w, h, canvas, win) {
   const opts = {
     width: w, height: h,
     pxAlign: false,
@@ -851,7 +1019,7 @@ function _createRawPlot(w, h, canvas) {
     },
     axes: [
       { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: _GRID },
-      { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: _GRID_Y },
+      { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: _GRID_Y, values: _sciYValues },
     ],
     series: [
       {},
@@ -859,7 +1027,7 @@ function _createRawPlot(w, h, canvas) {
       { stroke: '#52c45a', width: 1.5, paths: uPlot.paths.linear() },
       { stroke: '#5296e0', width: 1.5, paths: uPlot.paths.linear() },
     ],
-    scales: { x: { time: false }, y: { auto: true } },
+    scales: { x: { time: false }, y: { auto: true, range: (u, dMin, dMax) => _yRange(win, dMin, dMax) } },
   };
   return new uPlot(opts, _emptyRawData(), canvas);
 }
@@ -868,10 +1036,10 @@ function _emptyRawData() {
   return [[], [], [], []];
 }
 
-function _buildRawPlotData() {
+function _buildRawPlotData(span) {
   const t  = ring.t;
   const now = t.length ? t[t.length - 1] : 0;
-  const cut = now - windowSec;
+  const cut = now - (span || _defaultWindowSec);
   const i0  = t.findIndex(v => v >= cut);
   const sl  = (arr) => arr.slice(i0 < 0 ? 0 : i0);
   return [
@@ -952,10 +1120,15 @@ function connect() {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
 
-    if (msg.type === 'frame')  handleFrame(msg);
-    if (msg.type === 'fft')    handleFFT(msg);
-    if (msg.type === 'status') handleStatus(msg);
-    if (msg.type === 'burst')  handleBurst(msg);
+    // Guard each handler so one bad message can't wedge the socket loop.
+    try {
+      if (msg.type === 'frame')  handleFrame(msg);
+      if (msg.type === 'fft')    handleFFT(msg);
+      if (msg.type === 'status') handleStatus(msg);
+      if (msg.type === 'burst')  handleBurst(msg);
+    } catch (e) {
+      console.error('WS handler error for', msg.type, e);
+    }
   };
 }
 
@@ -1045,16 +1218,17 @@ function handleFrame(msg) {
     ring.z_last.push(zLast);
   }
 
-  // Trim ring to visible window + small margin (not during burst)
+  // Trim ring to the largest window span in use + small margin (not during burst)
   if (ring.t.length > 0 && !_burstFFT) {
-    const tKeep = ring.t[ring.t.length - 1] - windowSec - 1;
+    const tKeep = ring.t[ring.t.length - 1] - _maxRawWindowSec() - 1;
     while (ring.t.length > 1 && ring.t[0] < tKeep) {
       for (const k of Object.keys(ring)) ring[k].shift();
     }
   }
 
-  // Update all raw windows
-  const plotData = _buildRawPlotData();
+  // Update all raw windows — each uses its own window length for the X span.
+  // Slicing per window is cheap (a few windows, O(n) each) and keeps the
+  // per-window span independent without touching the shared ring.
   for (const win of Object.values(_chartWindows)) {
     if (win.type === 'raw' && win.plot) {
       if (msg.units) {
@@ -1064,7 +1238,7 @@ function handleFrame(msg) {
           win.plot.axes[1].label = unit;
         }
       }
-      win.plot.setData(plotData);
+      win.plot.setData(_buildRawPlotData(win.windowSec));
     }
   }
 
@@ -1111,7 +1285,7 @@ function _updateRawStats() {
     for (let i = n - 1; i >= i0; i--) { if (ring.t[i] <= xMax) { iEnd = i + 1; break; } }
   } else if (!_burstFFT) {
     const tNow = ring.t[n - 1];
-    const tCut = tNow - windowSec;
+    const tCut = tNow - _maxRawWindowSec();
     for (let i = 0; i < n; i++) { if (ring.t[i] >= tCut) { i0 = i; break; } }
   }
 
@@ -1200,17 +1374,36 @@ function handleFFT(msg) {
     const info = WINDOW_TYPES[win.type];
     if (!info) continue;
 
-    if (info.group === 'fft') {
-      const data = _resolveAxis(mags, info.axis);
-      if (data) win.plot.setData([freq, data]);
-    } else if (info.group === 'psd') {
-      const data = _resolveAxis(psd, info.axis);
-      if (data) win.plot.setData([freq, data]);
+    // Per-window guard: an error updating one window must not skip the others
+    // (e.g. it would otherwise prevent later axes like Z from ever rendering).
+    try {
+      if (info.group === 'fft') {
+        let data = _resolveAxis(mags, info.axis);
+        if (data) { if (win.logScale) data = _toLog(data, 'fft'); win.plot.setData([freq, data]); }
+      } else if (info.group === 'psd') {
+        let data = _resolveAxis(psd, info.axis);
+        if (data) { if (win.logScale) data = _toLog(data, 'psd'); win.plot.setData([freq, data]); }
+      }
+    } catch (e) {
+      console.error('FFT/PSD window update failed', win.type, e);
     }
   }
 }
 
 function handleBurst(msg) {
+  // Cancelled or timed-out capture (e.g. sensor not connected → no data).
+  if (msg.cancelled) {
+    _setBurstButton(false);
+    if (msg.reason === 'timeout') {
+      showDialog({
+        title: 'Burst capture timed out',
+        message: 'No data was received during the capture window. Is the sensor connected and streaming? Check the sensor status, then try again.',
+      });
+    } else {
+      outInfo.textContent = 'Burst capture cancelled.';
+    }
+    return;
+  }
   const samples = msg.samples || {};
   const rate = msg.sample_rate_hz || _rateHz || 26667;
   const cols = _findAccelCols(samples);
@@ -1252,9 +1445,7 @@ function handleBurst(msg) {
   _rawStatsTimer = 0;
   _updateRawStats();
 
-  const btn = document.getElementById('btn-burst');
-  btn.disabled = false;
-  btn.textContent = 'Burst Capture';
+  _setBurstButton(false);
 
   // Handle burst FFT snapshots
   const fftCount = (msg.fft_snapshots && msg.fft_snapshots.length) || 0;
@@ -1293,16 +1484,10 @@ function handleStatus(msg) {
     btnStop.classList.toggle('active', !msg.streaming);
   }
 
-  // Burst state
-  if (msg.burst !== undefined) {
-    const btn = document.getElementById('btn-burst');
-    if (msg.burst) {
-      btn.disabled = true;
-      btn.textContent = 'Capturing…';
-    } else if (btn.disabled) {
-      btn.disabled = false;
-      btn.textContent = 'Burst Capture';
-    }
+  // Burst state — the backend is authoritative (survives a frontend reload and
+  // the frame-independent timeout), so always mirror msg.burst onto the button.
+  if (msg.burst !== undefined && msg.burst !== _capturing) {
+    _setBurstButton(!!msg.burst);
   }
 
   // Stats counters
@@ -1312,7 +1497,27 @@ function handleStatus(msg) {
     document.getElementById('stat-frames').textContent  = fmt(msg.stats.frames || 0);
     document.getElementById('stat-samples').textContent = fmt(msg.stats.samples || 0);
     document.getElementById('stat-fft').textContent     = fmt(msg.stats.fft_frames || 0);
+    const lossEl = document.getElementById('stat-udp-loss');
+    if (lossEl) {
+      const lost = msg.stats.udp_lost_chunks || 0;
+      lossEl.textContent = fmt(lost);
+      lossEl.classList.toggle('stat-warn', lost > 0);
+    }
+    // Per-stream transport indicator (auto-detected from live data).
+    const setTr = (id, v) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = v ? v.toUpperCase() : '—';
+      el.classList.toggle('tr-udp', v === 'udp');
+      el.classList.toggle('tr-tcp', v === 'tcp');
+      el.classList.toggle('tr-idle', !v);
+    };
+    setTr('tr-raw', msg.stats.raw_transport);
+    setTr('tr-fft', msg.stats.fft_transport);
   }
+
+  // Traffic Monitor panel (no-op unless the panel is open).
+  _updateMonitor(msg);
 }
 
 // ── logging button ────────────────────────────────────────────────────────────
@@ -1433,10 +1638,6 @@ document.getElementById('btn-export').addEventListener('click', () => {
 });
 
 // ── window selector ───────────────────────────────────────────────────────────
-selWindow.addEventListener('change', () => {
-  windowSec = Number(selWindow.value);
-});
-
 // ── console toggle ───────────────────────────────────────────────────────────
 const consoleFloat = document.getElementById('console-float');
 
@@ -1484,6 +1685,118 @@ document.getElementById('btn-stats-reset').addEventListener('click', async () =>
   await fetch('/api/stats/reset', { method: 'POST' });
 });
 
+// ── Traffic Monitor panel ─────────────────────────────────────────────────────
+const monitorFloat = document.getElementById('monitor-float');
+let _monitorMode = false;
+// Rolling snapshots for SMOOTHED rates (not an instantaneous delta, which would
+// dip to 0 for low-rate streams like FFT between status updates).
+let _monHist = [];              // [{ t, rawRecv, fftRecv, samples, dgrams }]
+const _MON_WINDOW_MS = 2000;    // average rates over this window
+
+function _mfmt(n) {
+  n = n || 0;
+  return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+}
+function _lossPct(missing, received) {
+  const tot = (missing || 0) + (received || 0);
+  if (tot <= 0) return '0%';
+  const p = (missing || 0) / tot * 100;
+  return (p > 0 && p < 0.1 ? p.toFixed(3) : p.toFixed(1)) + '%';
+}
+function _monBadge(id, v) {
+  const el = document.getElementById(id); if (!el) return;
+  el.textContent = v ? String(v).toUpperCase() : '—';
+  el.classList.toggle('tr-udp', v === 'udp');
+  el.classList.toggle('tr-tcp', v === 'tcp');
+  el.classList.toggle('tr-idle', !v);
+}
+
+function _setMonitor(on) {
+  _monitorMode = on;
+  monitorFloat.hidden = !on;
+  document.getElementById('btn-monitor').classList.toggle('active', on);
+  // Enabling pauses chart streaming (backend keeps receiving + logging);
+  // disabling resumes it. Stream ▶/■ buttons reflect this via msg.streaming.
+  fetch(on ? '/api/stream/stop' : '/api/stream/start', { method: 'POST' }).catch(() => {});
+  if (on) _monHist = [];  // reset rate baseline
+}
+
+document.getElementById('btn-monitor').addEventListener('click', () => _setMonitor(!_monitorMode));
+document.getElementById('btn-close-monitor').addEventListener('click', () => _setMonitor(false));
+document.getElementById('btn-monitor-reset').addEventListener('click', async () => {
+  await fetch('/api/stats/reset', { method: 'POST' }).catch(() => {});
+  _monHist = [];
+});
+
+function _updateMonitor(msg) {
+  if (monitorFloat.hidden || !msg.stats) return;
+  const s = msg.stats;
+  const raw = (s.streams && s.streams.raw) || {};
+  const fft = (s.streams && s.streams.fft) || {};
+
+  // Smoothed rates: average the counter deltas over a ~2 s window of snapshots,
+  // so a low-rate stream (e.g. FFT) doesn't flicker to 0 between status updates.
+  const now = performance.now();
+  _monHist.push({ t: now, rawRecv: raw.received || 0, fftRecv: fft.received || 0,
+                  samples: raw.samples || 0, dgrams: s.udp_datagrams || 0 });
+  while (_monHist.length > 2 && now - _monHist[0].t > _MON_WINDOW_MS) _monHist.shift();
+
+  let rawRate = '—', fftRate = '—', sps = '—', dps = '—';
+  if (_monHist.length >= 2) {
+    const a = _monHist[0], b = _monHist[_monHist.length - 1];
+    const dt = (b.t - a.t) / 1000;
+    if (dt > 0.3) {
+      const rate = (k) => Math.max(0, b[k] - a[k]) / dt;
+      rawRate = rate('rawRecv').toFixed(1) + '/s';
+      fftRate = rate('fftRecv').toFixed(1) + '/s';
+      sps     = _mfmt(Math.round(rate('samples'))) + '/s';
+      dps     = rate('dgrams').toFixed(0) + '/s';
+    }
+  }
+
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  const warn = (id, on) => { const e = document.getElementById(id); if (e) e.classList.toggle('stat-warn', !!on); };
+
+  set('mon-raw-recv', _mfmt(raw.received)); set('mon-raw-miss', _mfmt(raw.missing));
+  set('mon-raw-loss', _lossPct(raw.missing, raw.received)); warn('mon-raw-miss', (raw.missing || 0) > 0);
+  set('mon-raw-rate', rawRate); _monBadge('mon-raw-tr', raw.transport);
+  set('mon-fft-recv', _mfmt(fft.received)); set('mon-fft-miss', _mfmt(fft.missing));
+  set('mon-fft-loss', _lossPct(fft.missing, fft.received)); warn('mon-fft-miss', (fft.missing || 0) > 0);
+  set('mon-fft-rate', fftRate); _monBadge('mon-fft-tr', fft.transport);
+
+  set('mon-raw-samples', _mfmt(raw.samples)); set('mon-raw-sps', sps);
+
+  set('mon-udp-dgrams', _mfmt(s.udp_datagrams)); set('mon-udp-dps', dps);
+  set('mon-udp-pkts', _mfmt(s.udp_packets));
+  set('mon-udp-lostp', _mfmt(s.udp_lost_packets)); warn('mon-udp-lostp', (s.udp_lost_packets || 0) > 0);
+  set('mon-udp-lostc', _mfmt(s.udp_lost_chunks)); warn('mon-udp-lostc', (s.udp_lost_chunks || 0) > 0);
+  set('mon-udp-loss', _lossPct(s.udp_lost_packets, s.udp_packets));
+
+  set('mon-packets', _mfmt(s.packets)); set('mon-errors', _mfmt(s.errors)); warn('mon-errors', (s.errors || 0) > 0);
+  const conn = document.getElementById('mon-conn');
+  if (conn) { conn.textContent = msg.connected ? 'YES' : '—'; conn.classList.toggle('tr-udp', !!msg.connected); conn.classList.toggle('tr-idle', !msg.connected); }
+  const lg = document.getElementById('mon-logging');
+  if (lg) { lg.textContent = msg.logging ? 'ON' : 'off'; lg.classList.toggle('tr-udp', !!msg.logging); lg.classList.toggle('tr-idle', !msg.logging); }
+}
+
+// Make the monitor panel draggable by its titlebar (mirror the console panel).
+(function () {
+  const tb = monitorFloat.querySelector('.console-float-titlebar');
+  let sx, sy, ol, ot;
+  tb.addEventListener('mousedown', (e) => {
+    if (e.target.closest('button')) return;
+    e.preventDefault();
+    const r = monitorFloat.getBoundingClientRect();
+    monitorFloat.style.left = r.left + 'px'; monitorFloat.style.top = r.top + 'px';
+    monitorFloat.style.bottom = 'auto'; monitorFloat.style.right = 'auto';
+    sx = e.clientX; sy = e.clientY; ol = r.left; ot = r.top;
+    const mv = (e) => { monitorFloat.style.left = (ol + e.clientX - sx) + 'px'; monitorFloat.style.top = (ot + e.clientY - sy) + 'px'; };
+    const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
+    document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+  });
+  tb.style.cursor = 'grab';
+})();
+
 // ── Phase 2: sensor control ───────────────────────────────────────────────────
 function sensorBody(extra = {}) {
   if (!selectedSensor) {
@@ -1507,8 +1820,65 @@ async function apiPost(path, body) {
   return r.json();
 }
 
+// ── Message / warning dialog ──────────────────────────────────────────────────
+// showDialog({ title, message, warning, actions:[{label,primary,onClick}], onDismiss })
+// Each action closes the dialog then runs its onClick. Clicking the backdrop
+// closes and runs onDismiss (used by ensurePassword to treat it as cancel).
+function showDialog({ title = 'Notice', message = '', warning = true, actions, onDismiss } = {}) {
+  const overlay = document.getElementById('msg-overlay');
+  const bodyEl  = document.getElementById('msg-body');
+  const actEl   = document.getElementById('msg-actions');
+  document.getElementById('msg-title').textContent = title;
+  bodyEl.textContent = message;
+  bodyEl.classList.toggle('setup-warning', !!warning);
+  const acts = (actions && actions.length) ? actions : [{ label: 'OK', primary: true }];
+  const close = () => { overlay.hidden = true; overlay.onclick = null; };
+  actEl.innerHTML = '';
+  for (const a of acts) {
+    const b = document.createElement('button');
+    b.className = 'btn' + (a.primary ? ' btn-primary' : '');
+    b.textContent = a.label;
+    b.addEventListener('click', () => { close(); if (a.onClick) a.onClick(); });
+    actEl.appendChild(b);
+  }
+  overlay.onclick = (e) => { if (e.target === overlay) { close(); if (onDismiss) onDismiss(); } };
+  overlay.hidden = false;
+}
+
+// Pre-flight for sensor writes: if the password field is empty, warn (the sensor
+// will reject the change if it's password-protected) but let password-less
+// sensors continue. Resolves true to proceed, false to abort.
+let _emptyPwAck = false;
+function ensurePassword() {
+  if (inPw.value || _emptyPwAck) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    showDialog({
+      title: 'Password field is empty',
+      message: 'The Password field is empty. If this sensor is password-protected, the change will be rejected. Enter the password, or continue anyway (for sensors with no password).',
+      actions: [
+        { label: 'Enter password', primary: true, onClick: () => { inPw.focus(); resolve(false); } },
+        { label: 'Continue anyway', onClick: () => { _emptyPwAck = true; resolve(true); } },
+      ],
+      onDismiss: () => resolve(false),
+    });
+  });
+}
+
+// Detect the sensor's HMAC rejection (wrong or missing password) in an API
+// result and show a clear pop-up. Returns true if it was an auth error.
+function checkAuthError(d) {
+  if (!d || typeof d.detail !== 'string' || !/invalid_hmac/i.test(d.detail)) return false;
+  showDialog({
+    title: 'Wrong or missing password',
+    message: 'The sensor rejected the command — authentication (HMAC) failed. Check the Password field for the selected sensor and try again.',
+    actions: [{ label: 'OK', primary: true, onClick: () => inPw.focus() }],
+  });
+  return true;
+}
+
 document.getElementById('btn-get-info').addEventListener('click', async () => {
   const d = await apiPost('/api/sensor/info', sensorBody());
+  if (checkAuthError(d)) return;
   // Format with units for readability
   const fmt = { ...d };
   if (fmt.temp1 != null)     fmt.temp1 = `${fmt.temp1.toFixed(1)} °C`;
@@ -1516,10 +1886,16 @@ document.getElementById('btn-get-info').addEventListener('click', async () => {
   if (fmt.temp_core != null) fmt.temp_core = `${fmt.temp_core.toFixed(1)} °C`;
   if (fmt.cpu_usage != null) fmt.cpu_usage = `${fmt.cpu_usage.toFixed(1)} %`;
   outInfo.textContent = JSON.stringify(fmt, null, 2);
+  // Persistent status readout in the Selected Sensor panel.
+  const cpuEl = document.getElementById('info-cpu');
+  const dbgEl = document.getElementById('info-debug');
+  if (cpuEl) cpuEl.textContent = (d.cpu_usage != null) ? `${d.cpu_usage.toFixed(1)} %` : '—';
+  if (dbgEl) dbgEl.textContent = (d.debug_str != null && d.debug_str !== '') ? d.debug_str : '—';
 });
 
 document.getElementById('btn-get-cfg').addEventListener('click', async () => {
   const d = await apiPost('/api/sensor/config', sensorBody());
+  if (checkAuthError(d)) return;
   outInfo.textContent = JSON.stringify(d, null, 2);
   if (!d.detail) {
     document.getElementById('cfg-fs').value     = d.full_scale  || '';
@@ -1529,10 +1905,12 @@ document.getElementById('btn-get-cfg').addEventListener('click', async () => {
     document.getElementById('cfg-filt').value   = f.filter_enabled || '';
     document.getElementById('cfg-cutoff').value = f.filter_cutoff  || '';
     if (d.fft_size) document.getElementById('cfg-fft-size').value = d.fft_size;
+    if (d.fft_precision) document.getElementById('cfg-fft-precision').value = d.fft_precision;
   }
 });
 
 document.getElementById('btn-set-cfg').addEventListener('click', async () => {
+  if (!(await ensurePassword())) return;
   const d = await apiPost('/api/sensor/config/set', sensorBody({
     full_scale:     document.getElementById('cfg-fs').value    || null,
     axes:           document.getElementById('cfg-axes').value  || null,
@@ -1540,12 +1918,15 @@ document.getElementById('btn-set-cfg').addEventListener('click', async () => {
     filter_enabled: document.getElementById('cfg-filt').value  || null,
     filter_cutoff:  document.getElementById('cfg-cutoff').value || null,
     fft_size:       document.getElementById('cfg-fft-size').value || null,
+    fft_precision:  document.getElementById('cfg-fft-precision').value || null,
   }));
+  if (checkAuthError(d)) return;
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
 
 document.getElementById('btn-get-net').addEventListener('click', async () => {
   const d = await apiPost('/api/network/config', sensorBody());
+  if (checkAuthError(d)) return;
   outInfo.textContent = JSON.stringify(d, null, 2);
   if (!d.detail) {
     document.getElementById('net-ip').value          = d.ip           || '';
@@ -1560,10 +1941,13 @@ document.getElementById('btn-get-net').addEventListener('click', async () => {
     document.getElementById('net-dhcp').value         = d.dhcp         || 'FEATURE_DISABLED';
     document.getElementById('net-stream').value       = d.data_stream  || 'FEATURE_DISABLED';
     if (d.fft_stream) document.getElementById('net-fft-stream').value = d.fft_stream;
+    document.getElementById('net-sample-transport').value = d.sample_transport || 'FEATURE_DISABLED';
+    document.getElementById('net-fft-transport').value    = d.fft_transport    || 'FEATURE_DISABLED';
   }
 });
 
 document.getElementById('btn-set-net').addEventListener('click', async () => {
+  if (!(await ensurePassword())) return;
   const port = document.getElementById('net-server-port').value;
   const d = await apiPost('/api/network/config/set', sensorBody({
     ip:          document.getElementById('net-ip').value          || null,
@@ -1578,9 +1962,22 @@ document.getElementById('btn-set-net').addEventListener('click', async () => {
     dhcp:        document.getElementById('net-dhcp').value        || null,
     data_stream: document.getElementById('net-stream').value      || null,
     fft_stream:  document.getElementById('net-fft-stream').value  || null,
+    sample_transport: document.getElementById('net-sample-transport').value || null,
+    fft_transport:    document.getElementById('net-fft-transport').value    || null,
   }));
+  if (checkAuthError(d)) return;
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
+
+// Changing a transport only takes effect after a sensor reboot — remind the operator.
+function _transportRestartNotice() {
+  showDialog({
+    title: 'Sensor restart required',
+    message: 'Transport (TCP/UDP) changes take effect only after a sensor restart. Click Apply to save the setting, then power-cycle the sensor (or use Restart Sensor) for it to take effect.',
+  });
+}
+document.getElementById('net-sample-transport').addEventListener('change', _transportRestartNotice);
+document.getElementById('net-fft-transport').addEventListener('change', _transportRestartNotice);
 
 // ── NTP check ────────────────────────────────────────────────────────────────
 async function _checkNtp(ip, statusEl) {
@@ -1629,11 +2026,27 @@ document.getElementById('btn-stream-stop').addEventListener('click', async () =>
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
 
-document.getElementById('btn-burst').addEventListener('click', async () => {
-  const dur = Number(document.getElementById('sel-burst-duration').value);
+// Set the burst button's look/state. `capturing` → acts as a Cancel button.
+function _setBurstButton(capturing) {
+  _capturing = capturing;
   const btn = document.getElementById('btn-burst');
-  btn.disabled = true;
-  btn.textContent = `Capturing ${dur}s…`;
+  if (!btn) return;
+  btn.disabled = false;
+  btn.textContent = capturing ? 'Cancel Capture' : 'Burst Capture';
+  btn.classList.toggle('btn-danger', capturing);
+  btn.classList.toggle('btn-primary', !capturing);
+}
+
+document.getElementById('btn-burst').addEventListener('click', async () => {
+  if (_capturing) {
+    // Cancel an in-progress capture.
+    _setBurstButton(false);
+    try { await fetch('/api/burst/cancel', { method: 'POST' }); } catch (e) {}
+    outInfo.textContent = 'Burst capture cancelled.';
+    return;
+  }
+  const dur = Number(document.getElementById('sel-burst-duration').value);
+  _setBurstButton(true);   // becomes "Cancel Capture"; backend timeout/status drive the reset
   try {
     const r = await fetch('/api/burst', {
       method: 'POST',
@@ -1642,29 +2055,32 @@ document.getElementById('btn-burst').addEventListener('click', async () => {
     });
     const d = await r.json();
     outInfo.textContent = JSON.stringify(d, null, 2);
-  } finally {
-    // Re-enable after capture duration + a small margin
-    setTimeout(() => {
-      btn.disabled = false;
-      btn.textContent = 'Burst Capture';
-    }, dur * 1000 + 500);
+  } catch (e) {
+    _setBurstButton(false);
+    outInfo.textContent = 'Burst request failed: ' + e;
   }
 });
 
 // ── FFT stream buttons ──────────────────────────────────────────────────────
 document.getElementById('btn-fft-start').addEventListener('click', async () => {
+  if (!(await ensurePassword())) return;
   const d = await apiPost('/api/stream/fft/start', sensorBody());
+  if (checkAuthError(d)) return;
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
 
 document.getElementById('btn-fft-stop').addEventListener('click', async () => {
+  if (!(await ensurePassword())) return;
   const d = await apiPost('/api/stream/fft/stop', sensorBody());
+  if (checkAuthError(d)) return;
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
 
 document.getElementById('btn-reset').addEventListener('click', async () => {
   if (!confirm('Reset the sensor?')) return;
+  if (!(await ensurePassword())) return;
   const d = await apiPost('/api/sensor/reset', sensorBody());
+  if (checkAuthError(d)) return;
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
 
@@ -1874,6 +2290,9 @@ document.getElementById('btn-setup-confirm').addEventListener('click', async () 
   try {
     const body = sensorBody(extra);
     const res = await apiPost('/api/network/config/set', body);
+    // No empty-password pre-flight here — fresh sensors in setup are often
+    // password-less — but still surface a clear message if it's rejected.
+    if (checkAuthError(res)) { _setupPending = null; return; }
     outInfo.textContent = 'Setup sent: ' + JSON.stringify(res, null, 2);
   } catch (err) {
     if (err.message !== 'no sensor selected')
@@ -1919,12 +2338,16 @@ function applyTheme(isLight) {
       if (info.group === 'spectrogram') {
         win.canvas.innerHTML = '';
         win.plot = _createSpectrogramPlot(win.canvas, info);
+        win.plot._log = !!win.logScale;
       } else if (info.group === 'timesync') {
         win.canvas.innerHTML = '';
         win.plot = _createTimeSyncPlot(win.canvas);
       } else {
-        win.plot = _createPlot(win.type, win.canvas, info);
+        // Pass `win` so the Y-scale range closure binds to this window
+        // (otherwise fixed Y-scale silently reverts to auto after a theme change).
+        win.plot = _createPlot(win.type, win.canvas, info, win);
       }
+      _refreshWindow(win);
     }
   }
 }
@@ -1956,6 +2379,115 @@ chkAutoBoot.addEventListener('change', () => {
   _settings.autoBoot = chkAutoBoot.checked;
   localStorage.setItem('autoBoot', chkAutoBoot.checked);
 });
+
+// ── Per-window settings modal (Y-scale + window length) ───────────────────────
+const wsOverlay   = document.getElementById('winsettings-overlay');
+const wsTitle     = document.getElementById('ws-title');
+const wsYAuto     = document.getElementById('ws-y-auto');
+const wsYFixed    = document.getElementById('ws-y-fixed');
+const wsYMin      = document.getElementById('ws-y-min');
+const wsYMax      = document.getElementById('ws-y-max');
+const wsFixedRow  = document.getElementById('ws-fixed-row');
+const wsYHint     = document.getElementById('ws-y-hint');
+const wsYscaleGrp = document.getElementById('ws-yscale-group');
+const wsLogGroup  = document.getElementById('ws-log-group');
+const wsLog       = document.getElementById('ws-log');
+const wsWinlenGrp = document.getElementById('ws-winlen-group');
+const wsWinlen    = document.getElementById('ws-winlen');
+let _wsWinId = null;
+
+function _wsSyncFixedEnabled() {
+  const fixed = wsYFixed.checked;
+  wsFixedRow.style.opacity = fixed ? '1' : '0.45';
+  wsYMin.disabled = wsYMax.disabled = !fixed;
+}
+
+function openWindowSettings(id) {
+  const win = _chartWindows[id];
+  if (!win) return;
+  _wsWinId = id;
+  const info = WINDOW_TYPES[win.type] || {};
+  wsTitle.textContent = info.label || win.type;
+
+  const isRaw = win.type === 'raw';
+  const isSpectro = info.group === 'spectrogram';
+  const hasValueAxis = isRaw || info.group === 'fft' || info.group === 'psd';  // line charts
+  const hasLog = info.group === 'fft' || info.group === 'psd' || isSpectro;
+
+  // Y-axis scale (line charts only — a spectrogram's Y is frequency, not a value)
+  wsYscaleGrp.hidden = !hasValueAxis;
+  const ys = win.yScale || { mode: 'auto' };
+  wsYAuto.checked  = ys.mode !== 'fixed';
+  wsYFixed.checked = ys.mode === 'fixed';
+  wsYMin.value = (ys.min != null) ? ys.min : '';
+  wsYMax.value = (ys.max != null) ? ys.max : '';
+  const unit = win.logScale ? 'log — dB-scale units' :
+               (info.group === 'psd' ? '(m/s²)²/Hz' : 'm/s²');
+  wsYHint.textContent = `Fixed range is in the values currently plotted (${unit}).`;
+  _wsSyncFixedEnabled();
+
+  // Log scale (FFT/PSD/spectrogram)
+  wsLogGroup.hidden = !hasLog;
+  wsLog.checked = !!win.logScale;
+
+  // Window length only applies to raw (time-domain) windows.
+  wsWinlenGrp.hidden = !isRaw;
+  if (isRaw) wsWinlen.value = String(win.windowSec || _defaultWindowSec);
+
+  wsOverlay.hidden = false;
+}
+
+wsYAuto.addEventListener('change', _wsSyncFixedEnabled);
+wsYFixed.addEventListener('change', _wsSyncFixedEnabled);
+
+document.getElementById('ws-y-fit').addEventListener('click', () => {
+  const win = _chartWindows[_wsWinId];
+  if (!win) return;
+  const r = _currentRangeForWindow(win);
+  if (!r) { wsYHint.textContent = 'No data available yet to fit.'; return; }
+  // A little headroom above the peak; clamp the floor at 0 for non-negative data.
+  const [lo, hi] = r;
+  wsYFixed.checked = true; _wsSyncFixedEnabled();
+  wsYMin.value = (lo >= 0) ? 0 : +(lo * 1.1).toPrecision(4);
+  wsYMax.value = +(hi * 1.1).toPrecision(4);
+});
+
+document.getElementById('ws-apply').addEventListener('click', () => {
+  const win = _chartWindows[_wsWinId];
+  if (!win) { wsOverlay.hidden = true; return; }
+
+  if (!wsYscaleGrp.hidden) {
+    if (wsYFixed.checked) {
+      const mn = wsYMin.value === '' ? null : Number(wsYMin.value);
+      const mx = wsYMax.value === '' ? null : Number(wsYMax.value);
+      if (mx == null || !isFinite(mx)) { wsYHint.textContent = 'Enter a Max value for a fixed scale.'; return; }
+      win.yScale = { mode: 'fixed', min: (mn != null && isFinite(mn)) ? mn : null, max: mx };
+    } else {
+      win.yScale = { mode: 'auto', min: null, max: null };
+    }
+  }
+
+  if (!wsLogGroup.hidden) {
+    win.logScale = wsLog.checked;
+  }
+
+  if (win.type === 'raw') {
+    win.windowSec = Number(wsWinlen.value) || _defaultWindowSec;
+  }
+
+  // Re-render immediately. Both helpers are safe for any window type:
+  //  _rerenderSpectralWindow → re-applies the log transform for fft/psd and the
+  //    color-scale for spectrogram (no-op for raw).
+  //  _refreshWindow → re-slices raw to its window length and re-runs the Y-scale
+  //    range fn on the current data (no-op for spectrogram, which has no .data).
+  _rerenderSpectralWindow(win);
+  _refreshWindow(win);
+  _saveWindowState();
+  wsOverlay.hidden = true;
+});
+
+document.getElementById('ws-close').addEventListener('click', () => { wsOverlay.hidden = true; });
+wsOverlay.addEventListener('click', (e) => { if (e.target === wsOverlay) wsOverlay.hidden = true; });
 
 // Apply saved theme on load
 if (localStorage.getItem('theme') === 'light') {
@@ -2007,7 +2539,8 @@ const savedKeys = Object.keys(savedState);
 if (savedKeys.length > 0) {
   for (const s of Object.values(savedState)) {
     if (WINDOW_TYPES[s.type]) {
-      createChartWindow(s.type, { x: s.x, y: s.y, w: s.w, h: s.h });
+      createChartWindow(s.type, { x: s.x, y: s.y, w: s.w, h: s.h, logScale: s.logScale,
+                                  yScale: s.yScale, windowSec: s.windowSec });
     }
   }
 } else {
