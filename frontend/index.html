@@ -48,14 +48,6 @@
         <button id="btn-add-window" class="btn btn-primary" title="Open a new chart window — choose from Raw Waveform, FFT, or PSD views">+ New Window</button>
         <button id="btn-tile-grid" class="btn" title="Auto-arrange all open windows into an even grid layout">Tile Grid</button>
         <button id="btn-tile-vertical" class="btn" title="Stack all open windows vertically at full width">Tile Vertical</button>
-        <label title="Time window for the raw waveform X-axis — how many seconds of data to display">Window
-          <select id="sel-window">
-            <option value="2">2 s</option>
-            <option value="5" selected>5 s</option>
-            <option value="10">10 s</option>
-            <option value="30">30 s</option>
-          </select>
-        </label>
         <select id="sel-log-format" class="log-format-select" title="Log file format. TSV: tab-separated text file, human-readable. HDF5: compressed binary, efficient for large datasets. Change while not logging.">
           <option value="tsv">TSV</option>
           <option value="hdf5">HDF5</option>
@@ -69,9 +61,15 @@
           &middot; Frames <span id="stat-frames" title="Total acceleration data frames decoded">0</span>
           &middot; Samples <span id="stat-samples" title="Total individual samples across all axes">0</span>
           &middot; FFT <span id="stat-fft" title="Total FFT frames received">0</span>
+          &middot; UDP lost <span id="stat-udp-loss" title="UDP chunks lost during reassembly (dropped or out-of-window datagrams). 0 when the sensor streams over TCP.">0</span>
+        </span>
+        <span class="transport-info" id="transport-info" title="Which transport each stream is currently arriving on. Detected from live data and updates automatically when the sensor switches between TCP and UDP. Shows — when a stream is idle.">
+          Raw <span id="tr-raw" class="tr-badge tr-idle">—</span>
+          &middot; FFT <span id="tr-fft" class="tr-badge tr-idle">—</span>
         </span>
         <button id="btn-stats-reset" class="btn btn-sm" title="Reset all backend counters (packets, frames, samples, FFT) to zero">Reset</button>
         <button id="btn-toggle-console" class="btn btn-sm" title="Show or hide the floating console window — displays JSON responses from sensor API commands">Console</button>
+        <button id="btn-monitor" class="btn btn-sm" title="Traffic Monitor: open a live stats panel (UDP/TCP, RAW/FFT received vs missing). Enabling it PAUSES chart streaming to the browser to minimize load — the backend keeps receiving, counting, and logging. Ideal for long logging runs where you only want to watch for dropouts.">Monitor</button>
       </div>
     </div>
 
@@ -96,6 +94,10 @@
       <summary>Selected Sensor</summary>
       <div class="card">
         <div class="selected-info" id="selected-info" title="Click a sensor in the device list above to select it">No sensor selected</div>
+        <div class="sensor-status" id="sensor-status" title="Live device status from the last Get Info — CPU load and firmware debug string">
+          <span class="sensor-status-item">CPU <span id="info-cpu">—</span></span>
+          <span class="sensor-status-item">Debug <span id="info-debug" class="mono">—</span></span>
+        </div>
         <label title="Authentication password for the sensor. Required for configuration commands. Leave empty if the sensor has no password set.">Password
           <span class="pw-wrap">
             <input type="password" id="in-pw" placeholder="(empty)" />
@@ -109,6 +111,8 @@
         <div class="stream-controls">
           <button class="btn stream-btn" id="btn-stream-start" title="Resume streaming decimated data (min/max/last per axis) to the browser at 60 Hz. Low bandwidth, continuous. Does not require a sensor to be selected — controls the backend broadcaster.">Stream ▶</button>
           <button class="btn stream-btn" id="btn-stream-stop" title="Pause streaming data to the browser. The backend continues receiving data from the sensor and logging if active. Click Stream ▶ to resume.">Stream ■</button>
+          <button class="btn stream-btn" id="btn-fft-start" title="Runtime command to the sensor to START computing and streaming FFT now (Command.stream_fft). Immediate, no reboot, does not change the persistent default in Network Config → FFT Stream. Requires a sensor to be selected.">FFT ▶</button>
+          <button class="btn stream-btn" id="btn-fft-stop" title="Runtime command to the sensor to STOP FFT streaming now. Raw data streaming is unaffected. Does not change the persistent default in Network Config → FFT Stream.">FFT ■</button>
           <button class="btn stream-btn btn-primary" id="btn-burst" title="Capture every raw sample for the selected duration and send them all at once — like an oscilloscope single-shot trigger. Useful for detailed waveform analysis. You can zoom into the result with scroll wheel or drag-select.">Burst Capture</button>
           <select id="sel-burst-duration" class="burst-duration-select" title="How long to capture raw samples for burst mode. Longer durations produce more data. At 26.7 kHz, 1 second = ~26,700 samples per axis.">
             <option value="0.1">0.1 s</option>
@@ -193,19 +197,17 @@
             <option value="FFT_SIZE_2048">2048</option>
           </select>
         </label>
+        <label title="On-device FFT numeric precision. Q15 = 2 bytes/bin (~90 dB dynamic range, legacy default). Float32 = 4 bytes/bin (~144 dB), revealing small signals near the sensor noise floor but roughly doubling FFT bandwidth. Takes effect immediately when applied (one FFT frame is dropped during the switch); no reboot needed.">FFT Precision
+          <select id="cfg-fft-precision">
+            <option value="" selected disabled>— click Get Config —</option>
+            <option value="FFT_PRECISION_Q15">Q15 (int16, ~90 dB)</option>
+            <option value="FFT_PRECISION_FLOAT32">Float32 (~144 dB)</option>
+          </select>
+        </label>
+        <div class="hint">Float32 ~doubles FFT bandwidth.</div>
         <div class="btn-row">
           <button class="btn" id="btn-get-cfg" title="Read the current sensor configuration from the device">Get Config</button>
           <button class="btn btn-primary" id="btn-set-cfg" title="Write the selected configuration to the sensor. The sensor will restart its data stream with the new settings.">Apply</button>
-        </div>
-      </div>
-    </details>
-
-    <details>
-      <summary>FFT Config</summary>
-      <div class="card">
-        <div class="btn-row">
-          <button class="btn" id="btn-fft-start" title="Start FFT streaming from the sensor. The sensor computes FFT on-board and sends frequency spectra alongside raw data. Requires a sensor to be selected.">FFT Start</button>
-          <button class="btn" id="btn-fft-stop" title="Stop FFT streaming from the sensor. Raw data streaming is not affected.">FFT Stop</button>
         </div>
       </div>
     </details>
@@ -246,6 +248,19 @@
             <option>FEATURE_ENABLED</option>
           </select>
         </label>
+        <label title="Transport for the RAW SAMPLE stream. TCP = legacy reliable stream. UDP = lower-latency chunked datagrams (host reassembles them). Applied on the sensor's next reboot — power-cycle after Apply.">Raw Transport
+          <select id="net-sample-transport">
+            <option value="FEATURE_DISABLED">TCP</option>
+            <option value="FEATURE_ENABLED">UDP</option>
+          </select>
+        </label>
+        <label title="Transport for the FFT magnitude stream. TCP = legacy reliable stream. UDP = lower-latency chunked datagrams (host reassembles them). Applied on the sensor's next reboot — power-cycle after Apply.">FFT Transport
+          <select id="net-fft-transport">
+            <option value="FEATURE_DISABLED">TCP</option>
+            <option value="FEATURE_ENABLED">UDP</option>
+          </select>
+        </label>
+        <div class="hint" id="net-transport-hint">Transport changes apply on the sensor's next reboot — power-cycle after Apply.</div>
         <div class="btn-row">
           <button class="btn" id="btn-get-net" title="Read the current network configuration from the sensor">Get Config</button>
           <button class="btn btn-primary" id="btn-set-net" title="Write the network configuration to the sensor. The sensor may reconnect with new settings.">Apply</button>
@@ -263,6 +278,54 @@
     <button class="chart-window-close" id="btn-close-console" title="Close console window">&times;</button>
   </div>
   <pre id="out-info" class="output-box"></pre>
+</div>
+
+<!-- ── Floating traffic monitor panel ── -->
+<div class="console-float monitor-float" id="monitor-float" hidden>
+  <div class="console-float-titlebar">
+    <span class="console-float-title">Traffic Monitor</span>
+    <button class="btn btn-sm" id="btn-monitor-reset" title="Reset all traffic counters to zero">Reset</button>
+    <button class="chart-window-close" id="btn-close-monitor" title="Close monitor (resumes chart streaming)">&times;</button>
+  </div>
+  <div class="monitor-note" id="monitor-note">Chart streaming paused — receiving &amp; logging continue.</div>
+
+  <div class="monitor-group monitor-raw">
+    <div class="monitor-head">RAW waveform <span id="mon-raw-tr" class="tr-badge tr-idle">—</span></div>
+    <table class="monitor-table"><tbody>
+      <tr><td>Frames received</td><td id="mon-raw-recv">0</td></tr>
+      <tr><td>Frames missing</td><td id="mon-raw-miss">0</td></tr>
+      <tr><td>Loss</td><td id="mon-raw-loss">0%</td></tr>
+      <tr><td>Rate</td><td id="mon-raw-rate">—</td></tr>
+      <tr><td>Samples</td><td><span id="mon-raw-samples">0</span> &middot; <span id="mon-raw-sps">—</span></td></tr>
+    </tbody></table>
+  </div>
+
+  <div class="monitor-group monitor-fft">
+    <div class="monitor-head">FFT spectrum <span id="mon-fft-tr" class="tr-badge tr-idle">—</span></div>
+    <table class="monitor-table"><tbody>
+      <tr><td>Frames received</td><td id="mon-fft-recv">0</td></tr>
+      <tr><td>Frames missing</td><td id="mon-fft-miss">0</td></tr>
+      <tr><td>Loss</td><td id="mon-fft-loss">0%</td></tr>
+      <tr><td>Rate</td><td id="mon-fft-rate">—</td></tr>
+    </tbody></table>
+  </div>
+
+  <div class="monitor-group">
+    <div class="monitor-head">UDP link <span class="monitor-sub">(RAW + FFT combined)</span></div>
+    <table class="monitor-table"><tbody>
+      <tr><td>Datagrams</td><td><span id="mon-udp-dgrams">0</span> &middot; <span id="mon-udp-dps">—</span></td></tr>
+      <tr><td>Packets reassembled</td><td id="mon-udp-pkts">0</td></tr>
+      <tr><td>Lost packets</td><td id="mon-udp-lostp">0</td></tr>
+      <tr><td>Lost chunks</td><td id="mon-udp-lostc">0</td></tr>
+      <tr><td>Loss</td><td id="mon-udp-loss">0%</td></tr>
+    </tbody></table>
+  </div>
+
+  <div class="monitor-section">
+    Packets <span id="mon-packets">0</span> &middot; Errors <span id="mon-errors">0</span>
+    &middot; Sensor <span id="mon-conn" class="tr-badge tr-idle">—</span>
+    &middot; Logging <span id="mon-logging" class="tr-badge tr-idle">off</span>
+  </div>
 </div>
 
 <!-- ── "New Window" type picker popup ── -->
@@ -345,6 +408,63 @@
     <div class="btn-row" style="margin-top:.75rem">
       <button class="btn" id="btn-settings-close">Close</button>
     </div>
+  </div>
+</div>
+
+<!-- ── Per-window settings modal ── -->
+<div class="popup-overlay" id="winsettings-overlay" hidden>
+  <div class="popup setup-modal">
+    <div class="popup-title">Window Settings — <span id="ws-title">—</span></div>
+
+    <div class="settings-group" id="ws-yscale-group">
+      <div class="ws-label">Y-axis scale</div>
+      <label class="settings-toggle" title="Y-axis auto-fits the data on every frame (default).">
+        <input type="radio" name="ws-yscale" id="ws-y-auto" value="auto" /> Auto (fit each frame)
+      </label>
+      <label class="settings-toggle" title="Y-axis stays fixed to the min/max you set, so the trace doesn't jump around.">
+        <input type="radio" name="ws-yscale" id="ws-y-fixed" value="fixed" /> Fixed
+      </label>
+      <div class="ws-row" id="ws-fixed-row">
+        <label class="ws-field">Min <input type="number" id="ws-y-min" step="any" /></label>
+        <label class="ws-field">Max <input type="number" id="ws-y-max" step="any" /></label>
+        <button class="btn btn-sm" id="ws-y-fit" title="Fill Min/Max from the current data in this window">Fit to data</button>
+      </div>
+      <div class="hint" id="ws-y-hint"></div>
+    </div>
+
+    <div class="settings-group" id="ws-log-group" hidden>
+      <label class="settings-toggle" title="Logarithmic magnitude scale — reveals small signals many orders of magnitude below the peaks (needed to see the float32 FFT's dynamic range).">
+        <input type="checkbox" id="ws-log" /> Logarithmic magnitude scale
+      </label>
+    </div>
+
+    <div class="settings-group" id="ws-winlen-group" hidden>
+      <label class="ws-field" title="How many seconds of the raw waveform to display on the X-axis for this window.">Window length (s)
+        <select id="ws-winlen">
+          <option value="0.5">0.5 s</option>
+          <option value="1">1 s</option>
+          <option value="2">2 s</option>
+          <option value="5">5 s</option>
+          <option value="10">10 s</option>
+          <option value="30">30 s</option>
+          <option value="60">60 s</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="btn-row" style="margin-top:.75rem">
+      <button class="btn btn-primary" id="ws-apply">Apply</button>
+      <button class="btn" id="ws-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Generic message / warning dialog ── -->
+<div class="popup-overlay" id="msg-overlay" hidden>
+  <div class="popup setup-modal msg-modal">
+    <div class="popup-title" id="msg-title">Notice</div>
+    <div class="setup-warning" id="msg-body"></div>
+    <div class="btn-row" id="msg-actions" style="margin-top:.75rem"></div>
   </div>
 </div>
 

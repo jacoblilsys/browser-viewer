@@ -86,6 +86,11 @@ class SensorApiError(Exception):
     pass
 
 
+class SensorAuthError(SensorApiError):
+    """The sensor rejected the request's HMAC — wrong or missing password."""
+    pass
+
+
 # ── blocking UDP transport (runs in thread pool) ─────────────────────────────
 
 def _get_local_ip() -> str:
@@ -127,7 +132,15 @@ def _send_recv_blocking(
     sock.bind(('', 0))
 
     try:
+        # Send to the sensor's last-known unicast IP AND to the multicast group.
+        # The request header carries the target MAC, so the sensor matches on
+        # that and replies via multicast (which we've joined) — this reaches it
+        # even after a DHCP lease change makes the stored IP stale.
         sock.sendto(data, (target_ip, _UDP_PORT))
+        try:
+            sock.sendto(data, (_MULTICAST_ADDR, _UDP_PORT))
+        except OSError:
+            pass  # multicast send may fail on odd interfaces; unicast still tried
 
         deadline = time.monotonic() + _RESPONSE_TIMEOUT_S
         while True:
@@ -166,7 +179,13 @@ def _check(resp_bytes: bytes) -> _pb.Response:
     resp = _pb.Response()
     resp.ParseFromString(resp_bytes)
     if resp.status != _pb.RESPONSE_STATUS_OK:
-        raise SensorApiError(f'Sensor error: {_pb.ResponseStatus.Name(resp.status)}')
+        name = _pb.ResponseStatus.Name(resp.status)
+        if resp.status == _pb.RESPONSE_STATUS_INVALID_HMAC:
+            # Wrong or missing password — surfaced distinctly so the UI can
+            # tell the operator to check the password rather than assume the
+            # sensor is broken.
+            raise SensorAuthError(f'Sensor error: {name}')
+        raise SensorApiError(f'Sensor error: {name}')
     return resp
 
 
@@ -206,6 +225,7 @@ async def get_sensor_config(target_ip: str, mac: str, password: str) -> dict:
             'filter_cutoff':  _pb.CutoffKHz.Name(sc.filter.filter_cutoff),
         },
         'fft_size':   _pb.FftSize.Name(sc.fft_size),
+        'fft_precision': _safe_enum_name(_pb.FftPrecision, sc.fft_precision),
     }
 
 
@@ -219,6 +239,7 @@ async def set_sensor_config(
     filter_enabled: Optional[str] = None,
     filter_cutoff: Optional[str] = None,
     fft_size: Optional[str] = None,
+    fft_precision: Optional[str] = None,
 ):
     # Fetch current config first so we only overwrite supplied fields.
     get_req = _pb.Request(msg_version=1)
@@ -238,6 +259,10 @@ async def set_sensor_config(
         sc.filter.filter_cutoff = _pb.CutoffKHz.Value(filter_cutoff)
     if fft_size is not None:
         sc.fft_size = _pb.FftSize.Value(fft_size)
+    if fft_precision is not None:
+        # Takes effect immediately on the sensor (one FFT frame is dropped
+        # during the engine switch); no reboot required.
+        sc.fft_precision = _pb.FftPrecision.Value(fft_precision)
 
     set_req = _pb.Request(msg_version=1)
     set_req.set_sensor_config.CopyFrom(sc)
@@ -266,6 +291,10 @@ async def get_network_config(target_ip: str, mac: str, password: str) -> dict:
         'dhcp':         _pb.FeatureToggle.Name(nc.dhcp),
         'data_stream':  _pb.FeatureToggle.Name(nc.data_stream),
         'fft_stream':   _pb.FeatureToggle.Name(nc.fft_stream),
+        # Transport per stream: FEATURE_DISABLED = TCP (legacy), FEATURE_ENABLED = UDP.
+        # Applied on the sensor's next reboot.
+        'sample_transport': _safe_enum_name(_pb.FeatureToggle, nc.sample_transport),
+        'fft_transport':    _safe_enum_name(_pb.FeatureToggle, nc.fft_transport),
     }
 
 
@@ -304,6 +333,10 @@ async def set_network_config(target_ip: str, mac: str, password: str, **kwargs):
             nc.data_stream = _pb.FeatureToggle.Value(v)
         elif k == 'fft_stream':
             nc.fft_stream = _pb.FeatureToggle.Value(v)
+        elif k == 'sample_transport':
+            nc.sample_transport = _pb.FeatureToggle.Value(v)
+        elif k == 'fft_transport':
+            nc.fft_transport = _pb.FeatureToggle.Value(v)
 
     set_req = _pb.Request(msg_version=1)
     set_req.set_network_config.CopyFrom(nc)

@@ -117,6 +117,6 @@ class NetworkReceiver:
             state.expected_len = None
 
             asyncio.run_coroutine_threadsafe(
-                self._queue.put((payload, state.recv_time_ns)),
+                self._queue.put((payload, state.recv_time_ns, 'tcp')),
                 self._loop,
             )

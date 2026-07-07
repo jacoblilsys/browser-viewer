@@ -9,6 +9,7 @@ Start with:
 import asyncio
 import os
 import sys
+import time
 
 # Bootstrap protobuf path before any local imports that need it.
 _PROTO_DIR = os.path.join(os.path.dirname(__file__), 'protobuf')
@@ -24,12 +25,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from network_receiver import NetworkReceiver
+from udp_receiver import UDPReceiver
 from protobuf_decoder import decode_any, FrameData, FFTFrameData
 from broadcaster import Broadcaster
 from log_writer import LogManager
@@ -39,16 +41,51 @@ from mdns_scanner import MDNSScanner
 
 _TCP_HOST   = '0.0.0.0'
 _TCP_PORT   = int(os.environ.get('TCP_PORT', '8066'))
+# UDP data streaming (opt-in per-stream on the sensor). The device sends UDP to
+# the same server_port it uses for TCP, so default UDP_PORT to TCP_PORT.
+# TCP and UDP on the same port number do not conflict.
+_UDP_PORT   = int(os.environ.get('UDP_PORT', str(_TCP_PORT)))
 _LOG_DIR    = os.environ.get('LOG_DIR', './logs')
 _WS_FPS     = int(os.environ.get('WS_FPS', '60'))
 _NETWORK_IF = os.environ.get('NETWORK_IF', '').strip()
 _FRONTEND   = Path(__file__).parent.parent / 'frontend'
 
 
+def _is_ipv4(s: str) -> bool:
+    parts = (s or '').split('.')
+    return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+
+
+def _cli_bind_host() -> str:
+    """The uvicorn --host bind IP from argv, if it's a specific (non-wildcard,
+    non-loopback) IPv4 — e.g. `uvicorn main:app --host 169.254.41.42`."""
+    argv = sys.argv
+    host = ''
+    for i, a in enumerate(argv):
+        if a == '--host' and i + 1 < len(argv):
+            host = argv[i + 1]
+        elif a.startswith('--host='):
+            host = a.split('=', 1)[1]
+    if _is_ipv4(host) and host != '0.0.0.0' and not host.startswith('127.'):
+        return host
+    return ''
+
+
+def _request_host(request) -> str:
+    """The address the browser used to reach us (from the request), when it's a
+    usable non-loopback IPv4 — the most reliable server IP on multi-homed hosts."""
+    h = request.url.hostname if request else ''
+    return h if (_is_ipv4(h) and not h.startswith('127.')) else ''
+
+
 def _get_local_ip() -> str:
-    """Return NETWORK_IF env var if set, otherwise auto-detect via routing table."""
+    """Best guess at this server's IP, in priority order: NETWORK_IF override,
+    the uvicorn --host bind IP, then routing-table auto-detect."""
     if _NETWORK_IF:
         return _NETWORK_IF
+    bind = _cli_bind_host()
+    if bind:
+        return bind
     import socket as _sock
     try:
         s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
@@ -76,6 +113,7 @@ def _get_interface_name(ip: str) -> str:
 
 _queue:    asyncio.Queue = asyncio.Queue(maxsize=4096)
 _receiver: Optional[NetworkReceiver] = None
+_udp_receiver: Optional[UDPReceiver] = None
 _broadcaster  = Broadcaster(fps=_WS_FPS)
 _log_writer   = LogManager(output_dir=_LOG_DIR)
 _mdns         = MDNSScanner(interface_ip=_NETWORK_IF)
@@ -91,11 +129,102 @@ _stats = {
 }
 
 
+# Last observed transport ('tcp'/'udp') and monotonic timestamp per stream.
+# A stream is "active" only if a frame arrived within _TRANSPORT_STALE_S.
+_TRANSPORT_STALE_S = 3.0
+_transport_seen = {'raw': [None, 0.0], 'fft': [None, 0.0]}
+
+# Per-stream frame accounting for the traffic monitor. `received` = frames
+# decoded OK; `missing` = frames lost, inferred from Header.sequence_number
+# gaps (works for both TCP and UDP); `resets` = stream restarts / seq resets.
+_stream_stats = {
+    'raw': {'received': 0, 'missing': 0, 'resets': 0, 'last_uid': None, 'last_seq': None},
+    'fft': {'received': 0, 'missing': 0, 'resets': 0, 'last_uid': None, 'last_seq': None},
+}
+# A forward seq jump larger than this is treated as a stream restart, not loss
+# (guards against uint32 wrap and FLAG_STREAM_END seq→0 resets).
+_MAX_SEQ_GAP = 100_000
+
+
+def _account_seq(kind: str, stream_uid: int, seq: int):
+    """Update received/missing/resets for a stream from its sequence number."""
+    st = _stream_stats[kind]
+    st['received'] += 1
+    last_uid = st['last_uid']
+    last_seq = st['last_seq']
+    st['last_uid'] = stream_uid
+    st['last_seq'] = seq
+    if last_seq is None:
+        return  # first frame ever — nothing to compare
+    if stream_uid != last_uid:
+        st['resets'] += 1   # a different stream_uid means the stream restarted
+        return
+    delta = (seq - last_seq) & 0xFFFFFFFF   # uint32 wrap-safe forward distance
+    if delta == 0:
+        return  # duplicate / retransmit — ignore
+    if 1 <= delta <= _MAX_SEQ_GAP:
+        st['missing'] += delta - 1
+    else:
+        # backward or implausibly large jump → restart, don't inflate missing
+        st['resets'] += 1
+
+
+def _reset_stream_stats():
+    for st in _stream_stats.values():
+        st.update({'received': 0, 'missing': 0, 'resets': 0, 'last_uid': None, 'last_seq': None})
+
+# Status is connection/logging/stats metadata — it must NOT be broadcast on
+# every decoded frame (that floods the browser at the sensor's frame rate and
+# backs up the client event loop until the tab has to be refreshed). Cap it to
+# a few Hz here; the 1 Hz heartbeat covers idle periods.
+_STATUS_MIN_INTERVAL = 0.25  # seconds → ≤ 4 status broadcasts/sec
+_last_status_bcast = 0.0
+
+
+def _all_stats() -> dict:
+    """Base counters, UDP diagnostics, and current per-stream transport."""
+    s = dict(_stats)
+    if _udp_receiver is not None:
+        s.update(_udp_receiver.stats())
+    now = time.monotonic()
+    transports = {}
+    for stream in ('raw', 'fft'):
+        tp, ts = _transport_seen[stream]
+        transports[stream] = tp if (tp and now - ts < _TRANSPORT_STALE_S) else None
+        s[f'{stream}_transport'] = transports[stream]   # flat keys (existing toolbar)
+    # Nested per-stream detail for the traffic monitor panel.
+    s['streams'] = {
+        'raw': {'received': _stream_stats['raw']['received'],
+                'missing':  _stream_stats['raw']['missing'],
+                'resets':   _stream_stats['raw']['resets'],
+                'samples':  _stats['samples'],
+                'transport': transports['raw']},
+        'fft': {'received': _stream_stats['fft']['received'],
+                'missing':  _stream_stats['fft']['missing'],
+                'resets':   _stream_stats['fft']['resets'],
+                'transport': transports['fft']},
+    }
+    return s
+
+
+def _data_active() -> bool:
+    """True if any stream received data recently (TCP or UDP)."""
+    now = time.monotonic()
+    return any(ts and now - ts < _TRANSPORT_STALE_S for _, ts in _transport_seen.values())
+
+
+def _is_connected() -> bool:
+    """Sensor considered connected if the TCP socket is up OR data is arriving
+    on any transport (UDP is connectionless, so recent data == 'connected')."""
+    tcp = _receiver.connected_clients > 0 if _receiver else False
+    return tcp or _data_active()
+
+
 # ── lifespan ─────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _receiver
+    global _receiver, _udp_receiver
 
     _ip = _get_local_ip()
     _if = _get_interface_name(_ip)
@@ -103,6 +232,7 @@ async def lifespan(app: FastAPI):
     _log_host = logging.getLogger('host')
     _log_host.info('Network interface: %s%s', _ip, _if_label)
     _log_host.info('Sensor TCP port: %d', _TCP_PORT)
+    _log_host.info('Sensor UDP port: %d', _UDP_PORT)
     if not _NETWORK_IF:
         _log_host.info(
             'Tip: set NETWORK_IF=<ip> env var to force a specific interface'
@@ -111,6 +241,10 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
     _receiver = NetworkReceiver(_TCP_HOST, _TCP_PORT, _queue, loop)
     _receiver.start()
+    # UDP receiver runs alongside TCP: harmless when the sensor uses TCP, and
+    # ready to reassemble chunked frames when either stream is switched to UDP.
+    _udp_receiver = UDPReceiver(_TCP_HOST, _UDP_PORT, _queue, loop)
+    _udp_receiver.start()
     _broadcaster.start()
     _mdns.start()
 
@@ -131,6 +265,8 @@ async def lifespan(app: FastAPI):
     yield
 
     _receiver.stop()
+    if _udp_receiver is not None:
+        _udp_receiver.stop()
     _mdns.stop()
     _log_writer.close_all()
 
@@ -144,13 +280,32 @@ if _FRONTEND.exists():
 
 # ── queue drain ───────────────────────────────────────────────────────────────
 
+async def _maybe_broadcast_status(device_id: str = ''):
+    """Throttled status broadcast (shared across the raw & fft drain branches).
+    Capped at _STATUS_MIN_INTERVAL so status doesn't flood the browser at the
+    full decode rate; the 1 Hz heartbeat covers idle periods."""
+    global _last_status_bcast
+    now = time.monotonic()
+    if now - _last_status_bcast < _STATUS_MIN_INTERVAL:
+        return
+    _last_status_bcast = now
+    sensor_ip = _receiver.remote_ip or '' if _receiver else ''
+    await _broadcaster.broadcast_status(
+        connected=_is_connected(),
+        logging=_logging_on,
+        device_id=device_id,
+        sensor_ip=sensor_ip,
+        log_format=_log_writer.fmt,
+        stats=_all_stats(),
+    )
+
+
 async def _drain_queue():
     import logging as _logging
     _log = _logging.getLogger('drain')
-    global _logging_on
     _last_device_id = ''
     while True:
-        payload_bytes, recv_time_ns = await _queue.get()
+        payload_bytes, recv_time_ns, transport = await _queue.get()
         _stats['packets'] += 1
         try:
             result = decode_any(payload_bytes, recv_time_ns)
@@ -165,7 +320,9 @@ async def _drain_queue():
         if isinstance(result, FrameData):
             _stats['frames'] += 1
             _stats['samples'] += sum(len(arr) for arr in result.columns.values())
+            _account_seq('raw', result.stream_uid, result.seq)
             _last_device_id = result.device_id
+            _transport_seen['raw'] = [transport, time.monotonic()]
 
             if _logging_on:
                 try:
@@ -174,21 +331,13 @@ async def _drain_queue():
                     _log.warning('log_writer failed: %s', e)
 
             await _broadcaster.push(result)
-
-            connected = _receiver.connected_clients > 0 if _receiver else False
-            sensor_ip = _receiver.remote_ip or '' if _receiver else ''
-            await _broadcaster.broadcast_status(
-                connected=connected,
-                logging=_logging_on,
-                device_id=result.device_id,
-                sensor_ip=sensor_ip,
-                log_format=_log_writer.fmt,
-                stats=dict(_stats),
-            )
+            await _maybe_broadcast_status(result.device_id)
 
         elif isinstance(result, FFTFrameData):
             _stats['fft_frames'] += 1
+            _account_seq('fft', result.stream_uid, result.seq)
             _last_device_id = result.device_id
+            _transport_seen['fft'] = [transport, time.monotonic()]
 
             if _logging_on:
                 try:
@@ -197,6 +346,9 @@ async def _drain_queue():
                     _log.warning('log_writer fft failed: %s', e)
 
             await _broadcaster.push_fft(result)
+            # Also refresh status from the FFT branch (shared throttle) so the
+            # monitor panel stays live even when only FFT is streaming.
+            await _maybe_broadcast_status(result.device_id)
 
 
 async def _status_heartbeat():
@@ -206,15 +358,14 @@ async def _status_heartbeat():
     _last_device_id = ''
     while True:
         await asyncio.sleep(1.0)
-        connected = _receiver.connected_clients > 0 if _receiver else False
         sensor_ip = _receiver.remote_ip or '' if _receiver else ''
         await _broadcaster.broadcast_status(
-            connected=connected,
+            connected=_is_connected(),
             logging=_logging_on,
             device_id=_last_device_id,
             sensor_ip=sensor_ip,
             log_format=_log_writer.fmt,
-            stats=dict(_stats),
+            stats=_all_stats(),
         )
 
 
@@ -234,9 +385,13 @@ async def api_devices():
 
 
 @app.get('/api/host')
-async def api_host():
-    ip = _get_local_ip()
-    return {'ip': ip, 'tcp_port': _TCP_PORT, 'if_name': _get_interface_name(ip)}
+async def api_host(request: Request):
+    # Prefer the address the browser actually reached us on — correct on
+    # link-local / multi-homed hosts where routing-table auto-detect guesses
+    # wrong. NETWORK_IF (explicit) still wins if set.
+    ip = _NETWORK_IF or _request_host(request) or _get_local_ip()
+    return {'ip': ip, 'tcp_port': _TCP_PORT, 'udp_port': _UDP_PORT,
+            'if_name': _get_interface_name(ip)}
 
 
 @app.get('/api/status')
@@ -247,6 +402,7 @@ async def api_status():
         'logging':   _logging_on,
         'streaming': not _broadcaster.paused,
         'tcp_port':  _TCP_PORT,
+        'udp_port':  _UDP_PORT,
     }
 
 
@@ -303,10 +459,21 @@ async def api_ntp_check(body: NtpCheckPayload):
     return result
 
 
+@app.get('/api/udp/debug')
+async def api_udp_debug():
+    """Deep UDP reassembly diagnostics — which chunk_idx arrive vs go missing."""
+    if _udp_receiver is None:
+        return {'error': 'no udp receiver'}
+    return _udp_receiver.debug_info()
+
+
 @app.post('/api/stats/reset')
 async def api_stats_reset():
     for k in _stats:
         _stats[k] = 0
+    _reset_stream_stats()
+    if _udp_receiver is not None:
+        _udp_receiver.reset_stats()
     return {'ok': True}
 
 
@@ -371,6 +538,7 @@ class SensorConfigPayload(SensorTarget):
     filter_enabled: Optional[str] = None
     filter_cutoff:  Optional[str] = None
     fft_size:       Optional[str] = None
+    fft_precision:  Optional[str] = None
 
 
 class NetworkConfigPayload(SensorTarget):
@@ -386,6 +554,8 @@ class NetworkConfigPayload(SensorTarget):
     dhcp:          Optional[str] = None
     data_stream:   Optional[str] = None
     fft_stream:    Optional[str] = None
+    sample_transport: Optional[str] = None
+    fft_transport:    Optional[str] = None
 
 
 def _sensor_api():
@@ -393,13 +563,26 @@ def _sensor_api():
     return sensor_api
 
 
+def _http_from(e: Exception) -> HTTPException:
+    """Map a sensor-API error to an HTTP response. HMAC failures (wrong/missing
+    password) get a distinct, machine-detectable detail ('invalid_hmac: ...')
+    so the UI can tell the operator to check the password instead of showing a
+    generic failure or assuming the sensor is broken."""
+    import sensor_api
+    if isinstance(e, sensor_api.SensorAuthError):
+        return HTTPException(
+            status_code=403,
+            detail='invalid_hmac: Wrong or missing password (the sensor rejected the command).')
+    msg = f'{type(e).__name__}: {e}' if str(e) else type(e).__name__
+    return HTTPException(status_code=502, detail=msg)
+
+
 @app.post('/api/sensor/info')
 async def sensor_info(body: SensorTarget):
     try:
         return await _sensor_api().get_sensor_info(body.target_ip, body.mac, body.password)
     except Exception as e:
-        msg = f'{type(e).__name__}: {e}' if str(e) else type(e).__name__
-        raise HTTPException(status_code=502, detail=msg)
+        raise _http_from(e)
 
 
 @app.post('/api/sensor/config')
@@ -407,7 +590,7 @@ async def sensor_config_get(body: SensorTarget):
     try:
         return await _sensor_api().get_sensor_config(body.target_ip, body.mac, body.password)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise _http_from(e)
 
 
 @app.post('/api/sensor/config/set')
@@ -421,10 +604,11 @@ async def sensor_config_set(body: SensorConfigPayload):
             filter_enabled=body.filter_enabled,
             filter_cutoff=body.filter_cutoff,
             fft_size=body.fft_size,
+            fft_precision=body.fft_precision,
         )
         return {'ok': True}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise _http_from(e)
 
 
 @app.post('/api/network/config')
@@ -432,7 +616,7 @@ async def network_config_get(body: SensorTarget):
     try:
         return await _sensor_api().get_network_config(body.target_ip, body.mac, body.password)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise _http_from(e)
 
 
 @app.post('/api/network/config/set')
@@ -444,7 +628,7 @@ async def network_config_set(body: NetworkConfigPayload):
             body.target_ip, body.mac, body.password, **kwargs)
         return {'ok': True}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise _http_from(e)
 
 
 @app.post('/api/stream/start')
@@ -470,13 +654,19 @@ async def api_burst(body: BurstPayload):
     return {'ok': True, 'duration': dur}
 
 
+@app.post('/api/burst/cancel')
+async def api_burst_cancel():
+    await _broadcaster.cancel_burst('cancelled')
+    return {'ok': True}
+
+
 @app.post('/api/stream/fft/start')
 async def api_fft_start(body: SensorTarget):
     try:
         await _sensor_api().stream_fft_start(body.target_ip, body.mac, body.password)
         return {'ok': True}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise _http_from(e)
 
 
 @app.post('/api/stream/fft/stop')
@@ -485,7 +675,7 @@ async def api_fft_stop(body: SensorTarget):
         await _sensor_api().stream_fft_stop(body.target_ip, body.mac, body.password)
         return {'ok': True}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise _http_from(e)
 
 
 @app.post('/api/sensor/reset')
@@ -494,7 +684,7 @@ async def api_reset(body: SensorTarget):
         await _sensor_api().reset(body.target_ip, body.mac, body.password)
         return {'ok': True}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise _http_from(e)
 
 
 @app.post('/api/sensor/boot')
@@ -503,4 +693,4 @@ async def api_boot_now(body: SensorTarget):
         await _sensor_api().boot_now(body.target_ip, body.mac, body.password)
         return {'ok': True}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise _http_from(e)
