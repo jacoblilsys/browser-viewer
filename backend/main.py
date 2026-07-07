@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -51,10 +51,41 @@ _NETWORK_IF = os.environ.get('NETWORK_IF', '').strip()
 _FRONTEND   = Path(__file__).parent.parent / 'frontend'
 
 
+def _is_ipv4(s: str) -> bool:
+    parts = (s or '').split('.')
+    return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+
+
+def _cli_bind_host() -> str:
+    """The uvicorn --host bind IP from argv, if it's a specific (non-wildcard,
+    non-loopback) IPv4 — e.g. `uvicorn main:app --host 169.254.41.42`."""
+    argv = sys.argv
+    host = ''
+    for i, a in enumerate(argv):
+        if a == '--host' and i + 1 < len(argv):
+            host = argv[i + 1]
+        elif a.startswith('--host='):
+            host = a.split('=', 1)[1]
+    if _is_ipv4(host) and host != '0.0.0.0' and not host.startswith('127.'):
+        return host
+    return ''
+
+
+def _request_host(request) -> str:
+    """The address the browser used to reach us (from the request), when it's a
+    usable non-loopback IPv4 — the most reliable server IP on multi-homed hosts."""
+    h = request.url.hostname if request else ''
+    return h if (_is_ipv4(h) and not h.startswith('127.')) else ''
+
+
 def _get_local_ip() -> str:
-    """Return NETWORK_IF env var if set, otherwise auto-detect via routing table."""
+    """Best guess at this server's IP, in priority order: NETWORK_IF override,
+    the uvicorn --host bind IP, then routing-table auto-detect."""
     if _NETWORK_IF:
         return _NETWORK_IF
+    bind = _cli_bind_host()
+    if bind:
+        return bind
     import socket as _sock
     try:
         s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
@@ -354,8 +385,11 @@ async def api_devices():
 
 
 @app.get('/api/host')
-async def api_host():
-    ip = _get_local_ip()
+async def api_host(request: Request):
+    # Prefer the address the browser actually reached us on — correct on
+    # link-local / multi-homed hosts where routing-table auto-detect guesses
+    # wrong. NETWORK_IF (explicit) still wins if set.
+    ip = _NETWORK_IF or _request_host(request) or _get_local_ip()
     return {'ip': ip, 'tcp_port': _TCP_PORT, 'udp_port': _UDP_PORT,
             'if_name': _get_interface_name(ip)}
 
