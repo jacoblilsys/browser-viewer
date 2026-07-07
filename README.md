@@ -320,20 +320,20 @@ Or use the `setup_sensor.py` rescue tool for link-local sensors — see [setup_s
 ### Quick Guide
 After opening the browser, start by inputting the default password: lilliesystems26 in the password field. 
 
-![alt text](initial_steps.webp)
+![alt text](frontend/initial_steps.webp)
 
 If the device shows up in the Devices on Network then click the setup button. 
 
-![alt text](sensor_setup.png)
+![alt text](frontend/sensor_setup.png)
 Clicking Apply Setup will configure the sensor with the host Server Ip so the sensor can start streaming data and communicate. 
 
 DHCP is enabled by default in the sensor. If no DHCP is available, it will fall back to a link local address. In this case your network card must be configured for a link local subnet in order for it to setup a static IP. 
 
 Expanding the Network Config dropdown and pressing Get Config will receive the network settings. Make sure the Server IP is correcly configured. 
 
-![alt text](network_config.png)
+![alt text](frontend/network_config.png)
 
 Expanding the Sensor Config dropdown shows the different configurations such as full scale range, Output Data Rate (ODR) and filter and FFT selections. 
-![alt text](sensor_config.png)
+![alt text](frontend/sensor_config.png)
 
 ## Trouble shooting
