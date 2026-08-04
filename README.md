@@ -136,7 +136,7 @@ The backend accumulates full-rate samples (e.g. 26.7 kHz) and sends a downsample
   - Raw Waveform (XYZ) — live acceleration traces
   - FFT (X/Y/Z) — frequency spectrum per axis, X-axis scaled by actual sample rate
   - PSD (X/Y/Z) — power spectral density per axis, `(m/s²)²/Hz`. Computed as a **one-sided, Hann-windowed, density-scaled periodogram** (`S_k = 2·|X_k|²/(fs·Σw²)`, factor 1 at DC) — matching `scipy.signal.periodogram(x, fs, window='hann', scaling='density')`, so levels agree with an FFT computed directly from the raw samples.
-- **Sidebar** — Device list (auto-discovered via mDNS), selected sensor controls (incl. live CPU load, firmware debug string, and runtime FFT ▶/■), sensor config (full scale, axes, ODR, filter, FFT size, and Q15/float32 FFT precision), network config (incl. per-stream TCP/UDP transport)
+- **Sidebar** — Device list (auto-discovered via mDNS), selected sensor controls (incl. live CPU load, firmware debug string, and runtime FFT ▶/■), sensor config (full scale, axes, ODR, filter, FFT size, and Q15/float32 FFT precision), network config (incl. per-stream TCP/UDP transport and NTP mode: poll/listen/disabled)
 - **Floating console** — Toggleable JSON output window for sensor API responses
 - **Traffic Monitor** (`Monitor` toggle) — a floating panel showing per-stream health: RAW and FFT **received vs missing** frames (missing inferred from `sequence_number` gaps, so it works over both TCP and UDP), loss %, rates, and transport; plus UDP link stats (datagrams, packets reassembled, lost packets/chunks). **Enabling it pauses chart streaming to the browser** (the backend keeps receiving, counting, and logging) to minimize load — ideal for long logging runs where you only want to watch for dropouts. Logging works normally in this mode. The panel's **Reset** zeroes all counters (base + per-stream + UDP).
 
@@ -244,6 +244,14 @@ Generates a 3D surface plot and a 2D spectrogram heatmap (saved as PNG). Options
 ## NTP Server Setup
 
 The sensor needs an NTP server for time synchronization. Your machine can serve NTP to the sensor. The viewer's "Test NTP" button (in Network Config) checks if port 123 is reachable.
+
+### NTP Mode (firmware ≥ 0x1030)
+
+Network Config has an **NTP Mode** selector (applied immediately, no reboot):
+
+- **Poll** *(default)* — the sensor queries the configured NTP Server (unicast SNTP client). This is the classic behavior.
+- **Listen (broadcast)** — the sensor never sends outbound NTP; it only listens for broadcast/multicast SNTP on the local segment. Use this on isolated LANs or **link-local (169.254.x.x)** networks where there's no route to an internet NTP server. The NTP Server IP is ignored (the field is greyed out). To provide a broadcast source, run `chronyd` in broadcast mode on a host on the same L2 segment (e.g. `broadcast 64 192.168.0.255` in `chrony.conf`); first sync can take a couple of minutes.
+- **Disabled** — no time synchronization.
 
 ### Linux (chrony)
 

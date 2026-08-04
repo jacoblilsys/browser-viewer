@@ -55,9 +55,11 @@ const MAX_TIMESYNC_PTS = 600; // ~10 minutes at 1 Hz status rate
 const dotSensor = document.getElementById('dot-sensor');
 const dotLog    = document.getElementById('dot-log');
 const dotWs     = document.getElementById('dot-ws');
+const dotTsync  = document.getElementById('dot-tsync');
 const lblDevice = document.getElementById('lbl-device');
 const lblRate   = document.getElementById('lbl-rate');
 const lblLog    = document.getElementById('lbl-log');
+const lblTsync  = document.getElementById('lbl-tsync');
 const lblWs     = document.getElementById('lbl-ws');
 const btnLog    = document.getElementById('btn-log');
 const selFmt    = document.getElementById('sel-log-format');
@@ -1476,6 +1478,9 @@ function handleStatus(msg) {
   selFmt.disabled = msg.logging;
   if (msg.log_format) selFmt.value = msg.log_format;
 
+  // Sensor time-sync state (absent on older backends → leave as unknown).
+  if (msg.time_sync !== undefined) { _lastTimeSync = msg.time_sync; _renderTimeSync(); }
+
   // Streaming state
   if (msg.streaming !== undefined) {
     const btnStart = document.getElementById('btn-stream-start');
@@ -1938,6 +1943,9 @@ document.getElementById('btn-get-net').addEventListener('click', async () => {
     document.getElementById('net-ntp-interval').value = d.ntp_interval_s ?? '';
     document.getElementById('net-ntp-offset').value   = d.ntp_offset_us ?? '';
     document.getElementById('net-ntp-min-error').value = d.ntp_min_ms_error_to_update ?? '';
+    // UNDEFINED (fresh factory unit) is treated as POLL in the UI.
+    document.getElementById('net-ntp-mode').value = (d.ntp_mode && d.ntp_mode !== 'NTP_MODE_UNDEFINED') ? d.ntp_mode : 'NTP_MODE_POLL';
+    _syncNtpModeUi();
     document.getElementById('net-dhcp').value         = d.dhcp         || 'FEATURE_DISABLED';
     document.getElementById('net-stream').value       = d.data_stream  || 'FEATURE_DISABLED';
     if (d.fft_stream) document.getElementById('net-fft-stream').value = d.fft_stream;
@@ -1959,6 +1967,7 @@ document.getElementById('btn-set-net').addEventListener('click', async () => {
     ntp_interval_s: document.getElementById('net-ntp-interval').value ? Number(document.getElementById('net-ntp-interval').value) : null,
     ntp_offset_us:  document.getElementById('net-ntp-offset').value ? Number(document.getElementById('net-ntp-offset').value) : null,
     ntp_min_ms_error_to_update: document.getElementById('net-ntp-min-error').value ? Number(document.getElementById('net-ntp-min-error').value) : null,
+    ntp_mode:    document.getElementById('net-ntp-mode').value    || null,
     dhcp:        document.getElementById('net-dhcp').value        || null,
     data_stream: document.getElementById('net-stream').value      || null,
     fft_stream:  document.getElementById('net-fft-stream').value  || null,
@@ -1978,6 +1987,57 @@ function _transportRestartNotice() {
 }
 document.getElementById('net-sample-transport').addEventListener('change', _transportRestartNotice);
 document.getElementById('net-fft-transport').addEventListener('change', _transportRestartNotice);
+
+// Latest FLAG_NO_TIME_SYNC state from the status broadcast: null = unknown (no
+// frame yet), true = clock disciplined, false = not synced. Declared before
+// _syncNtpModeUi (which runs at load and calls _renderTimeSync) to avoid a TDZ.
+let _lastTimeSync = null;
+
+// The NTP server IP (and poll-related fields) are irrelevant in Listen/Disabled
+// mode — grey them out. They're still written for future-proofing.
+function _syncNtpModeUi() {
+  const mode = document.getElementById('net-ntp-mode').value;
+  const pollOnly = (mode === 'NTP_MODE_POLL');
+  for (const id of ['net-ntp-ip', 'btn-test-ntp', 'net-ntp-interval', 'net-ntp-min-error']) {
+    const el = document.getElementById(id);
+    if (el) { el.disabled = !pollOnly; el.style.opacity = pollOnly ? '' : '0.5'; }
+  }
+  // NTP mode gates the "disabled vs waiting" wording of the time-sync indicator.
+  _renderTimeSync();
+}
+document.getElementById('net-ntp-mode').addEventListener('change', _syncNtpModeUi);
+_syncNtpModeUi();
+
+// ── Sensor time-sync indicator ───────────────────────────────────────────────
+// Combines _lastTimeSync (above) with the current NTP mode to distinguish
+// "waiting for sync" from "disabled by config".
+function _renderTimeSync() {
+  const mode = (document.getElementById('net-ntp-mode') || {}).value || '';
+  let dotCls, label, badgeCls, badgeText, statusCls, statusText;
+  if (_lastTimeSync === null) {
+    dotCls = 'dot';        label = 'Time sync —';
+    badgeCls = 'tr-badge tr-idle'; badgeText = '—';
+    statusCls = 'ntp-status';      statusText = '';
+  } else if (_lastTimeSync === true) {
+    dotCls = 'dot green';  label = 'Time synced';
+    badgeCls = 'tr-badge tr-udp';  badgeText = 'OK';
+    statusCls = 'ntp-status ok';   statusText = 'Synced';
+  } else if (mode === 'NTP_MODE_DISABLED') {
+    dotCls = 'dot';        label = 'Time sync off';
+    badgeCls = 'tr-badge tr-idle'; badgeText = 'OFF';
+    statusCls = 'ntp-status';      statusText = 'Off (NTP disabled)';
+  } else {
+    dotCls = 'dot orange'; label = 'Waiting for time sync';
+    badgeCls = 'tr-badge tr-warn'; badgeText = 'WAIT';
+    statusCls = 'ntp-status warn'; statusText = 'Waiting for time sync…';
+  }
+  if (dotTsync) dotTsync.className = dotCls;
+  if (lblTsync) lblTsync.textContent = label;
+  const st = document.getElementById('tsync-status');
+  if (st) { st.className = statusCls; st.textContent = statusText; }
+  const mt = document.getElementById('mon-tsync');
+  if (mt) { mt.className = badgeCls; mt.textContent = badgeText; }
+}
 
 // ── NTP check ────────────────────────────────────────────────────────────────
 async function _checkNtp(ip, statusEl) {

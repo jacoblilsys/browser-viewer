@@ -288,6 +288,9 @@ async def get_network_config(target_ip: str, mac: str, password: str) -> dict:
         'ntp_interval_s': nc.ntp_interval_s,
         'ntp_offset_us':  nc.ntp_offset_us if nc.has_ntp_offset_us else None,
         'ntp_min_ms_error_to_update': nc.ntp_min_ms_error_to_update if nc.has_ntp_min_ms_error_to_update else None,
+        # SNTP operating mode. POLL (query server) / LISTEN (broadcast) / DISABLED.
+        # UNDEFINED (0) is echoed as-is; the UI treats it as POLL.
+        'ntp_mode':     _safe_enum_name(_pb.NtpMode, nc.ntp_mode),
         'dhcp':         _pb.FeatureToggle.Name(nc.dhcp),
         'data_stream':  _pb.FeatureToggle.Name(nc.data_stream),
         'fft_stream':   _pb.FeatureToggle.Name(nc.fft_stream),
@@ -327,6 +330,9 @@ async def set_network_config(target_ip: str, mac: str, password: str, **kwargs):
         elif k == 'ntp_min_ms_error_to_update':
             nc.ntp_min_ms_error_to_update = int(v)
             nc.has_ntp_min_ms_error_to_update = True
+        elif k == 'ntp_mode':
+            # Applied immediately by the sensor; no reboot needed.
+            nc.ntp_mode = _pb.NtpMode.Value(v)
         elif k == 'dhcp':
             nc.dhcp = _pb.FeatureToggle.Value(v)
         elif k == 'data_stream':

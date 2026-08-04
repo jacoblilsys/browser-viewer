@@ -158,13 +158,15 @@ def test_hmac_error_mapping():
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-def _build_fft_frame(bins, columns):
+def _build_fft_frame(bins, columns, flags=0):
     """columns: list of (data_axis, numpy_type, numpy_bytes, values_ndarray).
 
     float_factor/exp are set so the SI scale factor is exactly 1.0, making the
-    expected magnitudes trivially checkable.
+    expected magnitudes trivially checkable. `flags` sets Header.flags.
     """
     msg = message_pb2.Message()
+    if flags:
+        msg.flags = flags
     fft = msg.fft_stream
     fft.fft_bins = bins
     fft.actual_frame_rate_hz = 1000.0
@@ -257,6 +259,34 @@ def test_fft_multi_axis_float32():
     assert np.allclose(fd.magnitudes['y'], y.astype(np.float64))
     assert np.allclose(fd.magnitudes['z'], z.astype(np.float64))
     print('  ok  multi-axis float32 columns split correctly')
+
+
+def test_no_time_sync_flag_decode():
+    """Header.flags FLAG_NO_TIME_SYNC (=2) must surface as FrameData.no_time_sync.
+    Old firmware sends flags=0 → False. Drives the time-sync UI indicator."""
+    bins = 4
+    vals = np.array([1.0, 2.0, 3.0, 4.0], dtype='<f4')
+    col = [(DataAxis.DATA_AXIS_X, NumpyType.NUMPY_TYPE_FLOATING_POINT, 4, vals)]
+
+    # flags = 0 → synced (old firmware default)
+    fd0 = decode_fft_frame(_build_fft_frame(bins, col, flags=0), 0)
+    assert fd0 is not None and fd0.no_time_sync is False, 'flags=0 must be no_time_sync=False'
+
+    # flag set → not synced
+    nts = message_pb2.Flags.FLAG_NO_TIME_SYNC
+    fd1 = decode_fft_frame(_build_fft_frame(bins, col, flags=nts), 0)
+    assert fd1 is not None and fd1.no_time_sync is True, 'FLAG_NO_TIME_SYNC must set no_time_sync'
+
+    # Unrelated flags must not trip it (e.g. FLAG_TEST_RUN without NO_TIME_SYNC).
+    fd2 = decode_fft_frame(
+        _build_fft_frame(bins, col, flags=message_pb2.Flags.FLAG_TEST_RUN), 0)
+    assert fd2 is not None and fd2.no_time_sync is False, 'other flags must not set no_time_sync'
+
+    # Both bits set → still detected (bitmask, not equality).
+    fd3 = decode_fft_frame(
+        _build_fft_frame(bins, col, flags=nts | message_pb2.Flags.FLAG_TEST_RUN), 0)
+    assert fd3.no_time_sync is True, 'masked bit must be detected among other flags'
+    print('  ok  FLAG_NO_TIME_SYNC decodes to no_time_sync (bitmask)')
 
 
 def test_fft_psd_one_sided_periodogram():

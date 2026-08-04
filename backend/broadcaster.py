@@ -305,7 +305,8 @@ class Broadcaster:
     async def broadcast_status(self, connected: bool, logging: bool,
                                device_id: str = '', sensor_ip: str = '',
                                log_format: str = 'tsv',
-                               stats: dict | None = None):
+                               stats: dict | None = None,
+                               time_synced: bool | None = None):
         envelope = {
             'type':       'status',
             'connected':  connected,
@@ -315,6 +316,7 @@ class Broadcaster:
             'device_id':  device_id,
             'sensor_ip':  sensor_ip,
             'log_format': log_format,
+            'time_sync':  time_synced,
         }
         if stats:
             envelope['stats'] = stats

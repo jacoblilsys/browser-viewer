@@ -34,6 +34,9 @@
         <span class="dot" id="dot-log" title="Logging status — orange when actively logging to file"></span>
         <span id="lbl-log" title="Whether data is being logged to disk">Not logging</span>
         <span class="sep">|</span>
+        <span class="dot" id="dot-tsync" title="Sensor time-sync status — green: clock disciplined by NTP; amber: waiting for time sync; grey: NTP disabled by config. Sensor timestamps are only reliable when green."></span>
+        <span id="lbl-tsync" title="Sensor time-sync status — green: clock disciplined by NTP; amber: waiting for time sync; grey: NTP disabled by config. Sensor timestamps are only reliable when green.">Time sync —</span>
+        <span class="sep">|</span>
         <span class="dot" id="dot-ws" title="WebSocket connection to the backend server"></span>
         <span id="lbl-ws" title="Browser-to-backend WebSocket connection status">Connecting…</span>
       </div>
@@ -220,7 +223,15 @@
         <label title="Default gateway for the sensor.">Gateway      <input type="text" id="net-gw"  /></label>
         <label title="IP address of the server that the sensor sends data to (this machine).">Server IP    <input type="text" id="net-server-ip" /></label>
         <label title="TCP port on the server that the sensor connects to (default 8066).">Server Port  <input type="text" id="net-server-port" /></label>
-        <label title="NTP server address for time synchronization. Typically set to the same machine as the data server. Standard NTP port 123 is used.">NTP Server
+        <label title="SNTP mode (applied immediately, no reboot). Poll: the sensor queries the NTP Server below. Listen: the sensor only listens for broadcast/multicast NTP on the local network — needed on isolated or link-local (169.254.x.x) segments; the server IP is ignored. Disabled: no time synchronization.">NTP Mode
+          <select id="net-ntp-mode">
+            <option value="NTP_MODE_POLL">Poll (query server)</option>
+            <option value="NTP_MODE_LISTEN">Listen (broadcast)</option>
+            <option value="NTP_MODE_DISABLED">Disabled</option>
+          </select>
+          <span class="ntp-status" id="tsync-status" title="Live time-sync state reported by the sensor on every data frame (Header FLAG_NO_TIME_SYNC)."></span>
+        </label>
+        <label title="NTP server address for time synchronization. Typically set to the same machine as the data server. Standard NTP port 123 is used. Ignored when NTP Mode is Listen or Disabled.">NTP Server
           <span class="ntp-field-row">
             <input type="text" id="net-ntp-ip" />
             <button class="btn btn-sm" id="btn-test-ntp" title="Test if the NTP server is reachable on port 123">Test</button>
@@ -325,6 +336,7 @@
     Packets <span id="mon-packets">0</span> &middot; Errors <span id="mon-errors">0</span>
     &middot; Sensor <span id="mon-conn" class="tr-badge tr-idle">—</span>
     &middot; Logging <span id="mon-logging" class="tr-badge tr-idle">off</span>
+    &middot; Time sync <span id="mon-tsync" class="tr-badge tr-idle">—</span>
   </div>
 </div>
 

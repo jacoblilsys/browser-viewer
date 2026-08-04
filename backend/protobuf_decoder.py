@@ -149,6 +149,7 @@ class FrameData:
     timestamp_ns: int       # device timestamp in nanoseconds
     recv_time_ns: int       # host recv time
     sample_rate_hz: float
+    no_time_sync: bool = False      # Header.flags FLAG_NO_TIME_SYNC — clock not disciplined
     columns: Dict[str, np.ndarray] = field(default_factory=dict)
     units:   Dict[str, str]        = field(default_factory=dict)  # label → unit string
 
@@ -166,6 +167,7 @@ class FFTFrameData:
     magnitudes: Dict[str, list]            # {'x': [...], 'y': [...], 'z': [...]}
     psd: Dict[str, list]                   # PSD: {'x': [...], ...} in (unit)²/Hz
     unit: str
+    no_time_sync: bool = False             # Header.flags FLAG_NO_TIME_SYNC — clock not disciplined
 
 
 # ── decoder ──────────────────────────────────────────────────────────────────
@@ -276,6 +278,7 @@ def decode_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | None':
         timestamp_ns=timestamp_ns,
         recv_time_ns=recv_time_ns,
         sample_rate_hz=rate_hz,
+        no_time_sync=bool(header.flags & message_pb2.Flags.FLAG_NO_TIME_SYNC),
         columns=columns,
         units=units,
     )
@@ -420,6 +423,7 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         magnitudes=magnitudes,
         psd=psd,
         unit=unit,
+        no_time_sync=bool(header.flags & message_pb2.Flags.FLAG_NO_TIME_SYNC),
     )
 
 

@@ -180,6 +180,10 @@ def _reset_stream_stats():
 _STATUS_MIN_INTERVAL = 0.25  # seconds → ≤ 4 status broadcasts/sec
 _last_status_bcast = 0.0
 
+# Sensor clock state, from Header.flags FLAG_NO_TIME_SYNC on each data frame.
+# None = unknown (no frame seen yet); True = disciplined; False = not synced.
+_time_synced: 'bool | None' = None
+
 
 def _all_stats() -> dict:
     """Base counters, UDP diagnostics, and current per-stream transport."""
@@ -297,10 +301,12 @@ async def _maybe_broadcast_status(device_id: str = ''):
         sensor_ip=sensor_ip,
         log_format=_log_writer.fmt,
         stats=_all_stats(),
+        time_synced=_time_synced,
     )
 
 
 async def _drain_queue():
+    global _time_synced
     import logging as _logging
     _log = _logging.getLogger('drain')
     _last_device_id = ''
@@ -322,6 +328,7 @@ async def _drain_queue():
             _stats['samples'] += sum(len(arr) for arr in result.columns.values())
             _account_seq('raw', result.stream_uid, result.seq)
             _last_device_id = result.device_id
+            _time_synced = not result.no_time_sync
             _transport_seen['raw'] = [transport, time.monotonic()]
 
             if _logging_on:
@@ -337,6 +344,7 @@ async def _drain_queue():
             _stats['fft_frames'] += 1
             _account_seq('fft', result.stream_uid, result.seq)
             _last_device_id = result.device_id
+            _time_synced = not result.no_time_sync
             _transport_seen['fft'] = [transport, time.monotonic()]
 
             if _logging_on:
@@ -366,6 +374,7 @@ async def _status_heartbeat():
             sensor_ip=sensor_ip,
             log_format=_log_writer.fmt,
             stats=_all_stats(),
+            time_synced=_time_synced,
         )
 
 
@@ -401,6 +410,7 @@ async def api_status():
         'connected': connected,
         'logging':   _logging_on,
         'streaming': not _broadcaster.paused,
+        'time_sync': _time_synced,
         'tcp_port':  _TCP_PORT,
         'udp_port':  _UDP_PORT,
     }
@@ -551,6 +561,7 @@ class NetworkConfigPayload(SensorTarget):
     ntp_interval_s: Optional[int] = None
     ntp_offset_us:  Optional[int] = None
     ntp_min_ms_error_to_update: Optional[int] = None
+    ntp_mode:      Optional[str] = None
     dhcp:          Optional[str] = None
     data_stream:   Optional[str] = None
     fft_stream:    Optional[str] = None
