@@ -15,10 +15,12 @@ from protobuf_decoder import FrameData
 # ── TSV writer (original LogWriter) ──────────────────────────────────────────
 
 class TsvWriter:
-    def __init__(self, output_dir: str = '.'):
+    def __init__(self, output_dir: str = '.', sensor_config: Optional[dict] = None):
         self.output_dir = output_dir
         self._files: Dict[tuple, IO] = {}
         self._headers: Dict[tuple, list] = {}
+        # {mac: {setting: value}} — see LogManager.set_sensor_config.
+        self.sensor_config = sensor_config if sensor_config is not None else {}
 
     def write(self, frame: FrameData):
         key = (frame.device_id, frame.stream_uid)
@@ -71,6 +73,12 @@ class TsvWriter:
         fh.write(f'# device_id={frame.device_id}\n')
         fh.write(f'# stream_uid={frame.stream_uid}\n')
         fh.write(f'# sample_rate_hz={frame.sample_rate_hz}\n')
+        # Sensor settings are not carried in the packet header, so record the
+        # last-known config for this device — notably dc_removal, which changes
+        # how the samples below should be interpreted.
+        for k, v in (self.sensor_config.get(frame.device_id.lower()) or {}).items():
+            if v is not None:
+                fh.write(f'# {k}={v}\n')
         fh.write(f'# units={",".join(frame.units.get(c,"") for c in ordered)}\n')
         fh.write('\t'.join(ordered) + '\n')
 
@@ -94,10 +102,20 @@ class LogManager:
         self.output_dir = output_dir
         self._fmt = fmt
         self._writer: Optional[object] = None
+        self._sensor_config: dict = {}
 
     @property
     def fmt(self) -> str:
         return self._fmt
+
+    def set_sensor_config(self, by_mac: dict):
+        """Supply the last-known sensor config per device MAC, as
+        {'aa:bb:cc:dd:ee:ff': {'dc_removal': 'DC_REMOVAL_1_HZ', ...}}. Stamped
+        into new capture files' metadata; a file already open keeps the values
+        it was opened with."""
+        self._sensor_config = by_mac
+        if self._writer is not None:
+            self._writer.sensor_config = by_mac
 
     def set_format(self, fmt: str):
         """Switch format. Takes effect on the next logging session."""
@@ -129,5 +147,7 @@ class LogManager:
     def _create_writer(self):
         if self._fmt == 'hdf5':
             from hdf5_writer import Hdf5Writer
-            return Hdf5Writer(output_dir=self.output_dir)
-        return TsvWriter(output_dir=self.output_dir)
+            return Hdf5Writer(output_dir=self.output_dir,
+                              sensor_config=self._sensor_config)
+        return TsvWriter(output_dir=self.output_dir,
+                         sensor_config=self._sensor_config)

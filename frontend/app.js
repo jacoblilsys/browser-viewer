@@ -1898,6 +1898,82 @@ document.getElementById('btn-get-info').addEventListener('click', async () => {
   if (dbgEl) dbgEl.textContent = (d.debug_str != null && d.debug_str !== '') ? d.debug_str : '—';
 });
 
+// ── DC removal (software high-pass, firmware 0x1032+) ────────────────────────
+// Enable and cutoff share a single wire enum, so choosing Off forgets the
+// cutoff. Remember the last non-Off choice per sensor and offer it back.
+const dcSel  = document.getElementById('cfg-dc-removal');
+const dcNote = document.getElementById('cfg-dc-note');
+const dcHint = document.getElementById('cfg-dc-hint');
+
+function _dcCacheKey() {
+  return 'dcRemoval:' + ((selectedSensor && selectedSensor.mac) || '').toLowerCase();
+}
+function _dcRemember(v) {
+  if (v && v !== 'DC_REMOVAL_OFF') {
+    try { localStorage.setItem(_dcCacheKey(), v); } catch {}
+  }
+}
+function _dcRecall() {
+  try { return localStorage.getItem(_dcCacheKey()); } catch { return null; }
+}
+function _dcLabel(v) {
+  const opt = dcSel.querySelector(`option[value="${v}"]`);
+  return opt ? opt.textContent : v;
+}
+
+function _syncDcRemovalUi() {
+  const v    = dcSel.value;
+  const on   = v && v !== 'DC_REMOVAL_OFF';
+  const filt = document.getElementById('cfg-filt').value;
+  const axes = document.getElementById('cfg-axes').value;
+
+  // The sensor forces DC removal off (keeping the stored value) while the
+  // hardware high-pass or slope filter is selected, where it would only add a
+  // settling transient.
+  const hwHp = (filt === 'FILTER_HIGH_PASS' || filt === 'FILTER_SLOPE_FILTER');
+  if (on && hwHp) {
+    dcNote.textContent = 'bypassed — hardware high-pass active';
+    dcNote.className   = 'ntp-status warn';
+  } else if (on) {
+    dcNote.textContent = 'on';
+    dcNote.className   = 'ntp-status ok';
+  } else {
+    dcNote.textContent = '';
+    dcNote.className   = 'ntp-status';
+  }
+
+  const notes = [];
+  if (v === 'DC_REMOVAL_OFF') {
+    const last = _dcRecall();
+    if (last && last !== 'DC_REMOVAL_OFF') {
+      notes.push(`Last used ${_dcLabel(last)} — <a href="#" id="cfg-dc-restore">restore</a>.`);
+    }
+  }
+  if (v === 'DC_REMOVAL_0p1_HZ') {
+    notes.push('0.1 Hz needs ~7 s to settle after Apply; earlier samples still carry the DC ramp.');
+  }
+  if (on) {
+    notes.push('FFT bin 0 collapses to ~0 while DC removal is on (it reports |DC| when off).');
+    if (axes && axes.endsWith('_VECTOR')) {
+      notes.push('Vector axis modes filter per axis <em>before</em> the magnitude, giving a rectified '
+               + 'AC magnitude: single-axis vibration then appears at double frequency. Not recommended '
+               + 'with the FFT stream.');
+    }
+  }
+  dcHint.innerHTML = notes.join(' ');
+  const restore = document.getElementById('cfg-dc-restore');
+  if (restore) {
+    restore.addEventListener('click', (e) => {
+      e.preventDefault();
+      dcSel.value = _dcRecall();
+      _syncDcRemovalUi();
+    });
+  }
+}
+dcSel.addEventListener('change', () => { _dcRemember(dcSel.value); _syncDcRemovalUi(); });
+document.getElementById('cfg-filt').addEventListener('change', _syncDcRemovalUi);
+document.getElementById('cfg-axes').addEventListener('change', _syncDcRemovalUi);
+
 document.getElementById('btn-get-cfg').addEventListener('click', async () => {
   const d = await apiPost('/api/sensor/config', sensorBody());
   if (checkAuthError(d)) return;
@@ -1911,6 +1987,10 @@ document.getElementById('btn-get-cfg').addEventListener('click', async () => {
     document.getElementById('cfg-cutoff').value = f.filter_cutoff  || '';
     if (d.fft_size) document.getElementById('cfg-fft-size').value = d.fft_size;
     if (d.fft_precision) document.getElementById('cfg-fft-precision').value = d.fft_precision;
+    // Firmware ≤ 0x1031 has no dc_removal field; the backend reports OFF for it.
+    dcSel.value = d.dc_removal || 'DC_REMOVAL_OFF';
+    _dcRemember(dcSel.value);
+    _syncDcRemovalUi();
   }
 });
 
@@ -1924,8 +2004,10 @@ document.getElementById('btn-set-cfg').addEventListener('click', async () => {
     filter_cutoff:  document.getElementById('cfg-cutoff').value || null,
     fft_size:       document.getElementById('cfg-fft-size').value || null,
     fft_precision:  document.getElementById('cfg-fft-precision').value || null,
+    dc_removal:     dcSel.value || null,
   }));
   if (checkAuthError(d)) return;
+  _dcRemember(dcSel.value);
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
 

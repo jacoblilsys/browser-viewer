@@ -156,6 +156,128 @@ def test_hmac_error_mapping():
     print('  ok  HMAC status → SensorAuthError; other status → SensorApiError')
 
 
+# ── DC removal (software high-pass, firmware 0x1032) ─────────────────────────
+
+def _stub_send_recv(pb, cfg, sent):
+    """Replacement for sensor_api._send_recv: records every Request and answers
+    with `cfg` as the sensor's SensorConfig."""
+    async def _send_recv(target_ip, payload, mac_str, password):
+        req = pb.Request()
+        req.ParseFromString(payload)
+        sent.append(req)
+        resp = pb.Response(status=pb.RESPONSE_STATUS_OK)
+        resp.sensor.CopyFrom(cfg)
+        return resp.SerializeToString()
+    return _send_recv
+
+
+def test_dc_removal_get_and_set():
+    """dc_removal rides SensorConfig tag 7. A sensor that omits it (fw ≤ 0x1031)
+    must read back as OFF rather than UNDEFINED or an error; a set must add the
+    field without disturbing the other settings, which are orthogonal to it."""
+    import sensor_api
+    import protobuf.sensor_cmd_pb2 as pb
+
+    cur = pb.SensorConfig(full_scale=pb.ACCEL_FS_2G, axes=pb.AXIS_XYZ,
+                          odr_div=pb.ODR_DIV_4, fft_size=pb.FFT_SIZE_1024,
+                          fft_precision=pb.FFT_PRECISION_Q15)
+    cur.filter.filter_enabled = pb.FILTER_LOW_PASS2
+    cur.filter.filter_cutoff  = pb.CUTOFF_2p66_KHZ
+
+    sent = []
+    orig = sensor_api._send_recv
+    sensor_api._send_recv = _stub_send_recv(pb, cur, sent)
+    try:
+        # Old firmware: tag 7 absent → 0/UNDEFINED on the wire → reported as OFF.
+        assert cur.dc_removal == 0
+        cfg = asyncio.run(sensor_api.get_sensor_config('1.2.3.4', 'aa:bb:cc:dd:ee:ff', ''))
+        assert cfg['dc_removal'] == 'DC_REMOVAL_OFF', cfg['dc_removal']
+
+        # Setting only dc_removal must preserve everything read back first.
+        sent.clear()
+        asyncio.run(sensor_api.set_sensor_config(
+            '1.2.3.4', 'aa:bb:cc:dd:ee:ff', '', dc_removal='DC_REMOVAL_1_HZ'))
+        assert len(sent) == 2, 'expected a get followed by a set'
+        sc = sent[1].set_sensor_config
+        assert sc.dc_removal == pb.DcRemoval.Value('DC_REMOVAL_1_HZ')
+        assert sc.odr_div == pb.ODR_DIV_4
+        assert sc.fft_precision == pb.FFT_PRECISION_Q15
+        # Orthogonal to the hardware filter — it must come through untouched.
+        assert sc.filter.filter_enabled == pb.FILTER_LOW_PASS2
+        assert sc.filter.filter_cutoff  == pb.CUTOFF_2p66_KHZ
+        # Field 7, varint: key 0x38 then the value.
+        assert b'\x38\x04' in sc.SerializeToString()
+
+        # A normal readback echoes the enum name.
+        cur.dc_removal = pb.DcRemoval.Value('DC_REMOVAL_0p5_HZ')
+        cfg = asyncio.run(sensor_api.get_sensor_config('1.2.3.4', 'aa:bb:cc:dd:ee:ff', ''))
+        assert cfg['dc_removal'] == 'DC_REMOVAL_0p5_HZ'
+
+        # A value newer than these bindings degrades to its number, it must not
+        # raise — same rule the NTP-mode and FFT-precision readbacks follow.
+        cur.dc_removal = 9
+        cfg = asyncio.run(sensor_api.get_sensor_config('1.2.3.4', 'aa:bb:cc:dd:ee:ff', ''))
+        assert cfg['dc_removal'] == '9', cfg['dc_removal']
+
+        # An unknown name from the UI is rejected locally, not sent as garbage.
+        sent.clear()
+        try:
+            asyncio.run(sensor_api.set_sensor_config(
+                '1.2.3.4', 'aa:bb:cc:dd:ee:ff', '', dc_removal='DC_REMOVAL_42_HZ'))
+            assert False, 'expected ValueError for an unknown enum name'
+        except ValueError:
+            pass
+        assert all(not s.HasField('set_sensor_config') for s in sent)
+    finally:
+        sensor_api._send_recv = orig
+    print('  ok  dc_removal get (absent → OFF, unknown → numeric) and set (tag 7, others kept)')
+
+
+def test_capture_metadata_records_sensor_config():
+    """No sensor setting is signalled in the packet header, so the capture
+    writers must stamp the last-known config — without dc_removal in the file a
+    saved capture does not say whether the signal was high-passed, or at what
+    corner."""
+    import tempfile
+    from log_writer import LogManager
+    from protobuf_decoder import FrameData
+
+    frame = FrameData(device_id='aa:bb:cc:dd:ee:ff', stream_uid=4, seq=1,
+                      timestamp_ns=0, recv_time_ns=0, sample_rate_hz=6667.0,
+                      columns={'accel_x': np.array([1.0, 2.0])},
+                      units={'accel_x': 'm/s²'})
+
+    with tempfile.TemporaryDirectory() as d:
+        lm = LogManager(output_dir=d, fmt='tsv')
+        lm.set_sensor_config({'aa:bb:cc:dd:ee:ff': {
+            'dc_removal': 'DC_REMOVAL_1_HZ', 'odr_div': 'ODR_DIV_4',
+            'fft_precision': None,
+        }})
+        lm.write(frame)
+        lm.close_all()
+        path = os.path.join(d, os.listdir(d)[0])
+        head = open(path).read()
+        assert '# dc_removal=DC_REMOVAL_1_HZ' in head, head[:400]
+        assert '# odr_div=ODR_DIV_4' in head
+        assert 'fft_precision' not in head, 'unknown settings must be omitted, not written as None'
+
+        # A device with no config read yet must still log, just without settings.
+        lm2 = LogManager(output_dir=d, fmt='tsv')
+        lm2.write(frame)
+        lm2.close_all()
+
+    # main._note_sensor_cfg flattens the API shape and forwards it to the writer.
+    import main
+    main._note_sensor_cfg('AA:BB:CC:DD:EE:FF', {
+        'full_scale': 'ACCEL_FS_2G', 'dc_removal': 'DC_REMOVAL_2_HZ',
+        'filter': {'filter_enabled': 'FILTER_LOW_PASS2', 'filter_cutoff': 'CUTOFF_2p66_KHZ'},
+    })
+    got = main._sensor_cfg_seen['aa:bb:cc:dd:ee:ff']   # keyed as FrameData.device_id
+    assert got['dc_removal'] == 'DC_REMOVAL_2_HZ'
+    assert got['filter_cutoff'] == 'CUTOFF_2p66_KHZ'
+    print('  ok  capture metadata records dc_removal + sensor settings (TSV header)')
+
+
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 def _build_fft_frame(bins, columns, flags=0):

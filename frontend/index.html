@@ -208,6 +208,20 @@
           </select>
         </label>
         <div class="hint">Float32 ~doubles FFT bandwidth.</div>
+        <label title="Software high-pass that removes DC / gravity offset (firmware 0x1032+). Runs after the decimator and is independent of the hardware Filter above — both can be active at once. Single pole (−6 dB/octave), so pick a corner well below the lowest frequency of interest: at 1 Hz a 2 Hz component is still ~3 dB down. Cutoffs are absolute Hz and do not scale with the ODR divisor.">DC Removal (software)
+          <select id="cfg-dc-removal">
+            <option value="" selected disabled>— click Get Config —</option>
+            <option value="DC_REMOVAL_OFF">Off</option>
+            <option value="DC_REMOVAL_0p1_HZ">0.1 Hz (settles 7.3 s)</option>
+            <option value="DC_REMOVAL_0p5_HZ">0.5 Hz (1.5 s)</option>
+            <option value="DC_REMOVAL_1_HZ">1 Hz (730 ms)</option>
+            <option value="DC_REMOVAL_2_HZ">2 Hz (370 ms)</option>
+            <option value="DC_REMOVAL_5_HZ">5 Hz (150 ms)</option>
+            <option value="DC_REMOVAL_10_HZ">10 Hz (75 ms)</option>
+          </select>
+          <span class="ntp-status" id="cfg-dc-note"></span>
+        </label>
+        <div class="hint" id="cfg-dc-hint"></div>
         <div class="btn-row">
           <button class="btn" id="btn-get-cfg" title="Read the current sensor configuration from the device">Get Config</button>
           <button class="btn btn-primary" id="btn-set-cfg" title="Write the selected configuration to the sensor. The sensor will restart its data stream with the new settings.">Apply</button>

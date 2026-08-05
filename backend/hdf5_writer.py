@@ -5,7 +5,8 @@ Filename: {mac}_{uid}_{YYYYMMDD_HHMMSS}.h5
 
 Structure:
     /data/<col>     — float32 datasets, chunked + gzip compressed
-    root attrs:     device_id, stream_uid, sample_rate_hz, created_at
+    root attrs:     device_id, stream_uid, sample_rate_hz, created_at,
+                    plus the last-known sensor settings (dc_removal, odr_div, …)
     dataset attrs:  unit
 """
 
@@ -20,11 +21,13 @@ from protobuf_decoder import FrameData, FFTFrameData
 
 
 class Hdf5Writer:
-    def __init__(self, output_dir: str = '.'):
+    def __init__(self, output_dir: str = '.', sensor_config: Optional[dict] = None):
         self.output_dir = output_dir
         self._files: Dict[tuple, h5py.File] = {}
         self._headers: Dict[tuple, list] = {}
         self._fft_init: Dict[tuple, bool] = {}  # whether /fft group exists
+        # {mac: {setting: value}} — see LogManager.set_sensor_config.
+        self.sensor_config = sensor_config if sensor_config is not None else {}
 
     def write(self, frame: FrameData):
         key = (frame.device_id, frame.stream_uid)
@@ -60,6 +63,12 @@ class Hdf5Writer:
         hf.attrs['stream_uid'] = frame.stream_uid
         hf.attrs['sample_rate_hz'] = frame.sample_rate_hz
         hf.attrs['created_at'] = ts
+        # Sensor settings are not carried in the packet header, so record the
+        # last-known config for this device — notably dc_removal, which changes
+        # how the samples in this file should be interpreted.
+        for k, v in (self.sensor_config.get(frame.device_id.lower()) or {}).items():
+            if v is not None:
+                hf.attrs[k] = v
 
         # Determine column order: dt first, then accel axes, then rest
         all_cols = list(frame.columns.keys())

@@ -23,7 +23,7 @@ logging.basicConfig(level=getattr(logging, _log_level, logging.INFO),
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -118,6 +118,31 @@ _broadcaster  = Broadcaster(fps=_WS_FPS)
 _log_writer   = LogManager(output_dir=_LOG_DIR)
 _mdns         = MDNSScanner(interface_ip=_NETWORK_IF)
 _logging_on   = False
+
+# Last sensor config seen per device, keyed by MAC as it appears in
+# FrameData.device_id ('aa:bb:cc:dd:ee:ff'). Populated whenever the UI reads or
+# writes a config. Used to stamp capture files: none of the sensor settings —
+# dc_removal included — are signalled in the packet header, so a saved capture
+# would otherwise not record whether the signal was high-passed, at what corner,
+# or which hardware filter was active.
+_sensor_cfg_seen: Dict[str, dict] = {}
+
+
+def _note_sensor_cfg(mac: str, cfg: dict):
+    if not isinstance(cfg, dict) or cfg.get('detail'):
+        return
+    f = cfg.get('filter') or {}
+    _sensor_cfg_seen[mac.lower()] = {
+        'full_scale':     cfg.get('full_scale'),
+        'axes':           cfg.get('axes'),
+        'odr_div':        cfg.get('odr_div'),
+        'filter_enabled': f.get('filter_enabled'),
+        'filter_cutoff':  f.get('filter_cutoff'),
+        'fft_size':       cfg.get('fft_size'),
+        'fft_precision':  cfg.get('fft_precision'),
+        'dc_removal':     cfg.get('dc_removal'),
+    }
+    _log_writer.set_sensor_config(_sensor_cfg_seen)
 
 # ── counters ──────────────────────────────────────────────────────────────────
 _stats = {
@@ -549,6 +574,7 @@ class SensorConfigPayload(SensorTarget):
     filter_cutoff:  Optional[str] = None
     fft_size:       Optional[str] = None
     fft_precision:  Optional[str] = None
+    dc_removal:     Optional[str] = None
 
 
 class NetworkConfigPayload(SensorTarget):
@@ -599,7 +625,9 @@ async def sensor_info(body: SensorTarget):
 @app.post('/api/sensor/config')
 async def sensor_config_get(body: SensorTarget):
     try:
-        return await _sensor_api().get_sensor_config(body.target_ip, body.mac, body.password)
+        cfg = await _sensor_api().get_sensor_config(body.target_ip, body.mac, body.password)
+        _note_sensor_cfg(body.mac, cfg)
+        return cfg
     except Exception as e:
         raise _http_from(e)
 
@@ -616,7 +644,19 @@ async def sensor_config_set(body: SensorConfigPayload):
             filter_cutoff=body.filter_cutoff,
             fft_size=body.fft_size,
             fft_precision=body.fft_precision,
+            dc_removal=body.dc_removal,
         )
+        # Read the config back so capture metadata reflects what the sensor
+        # actually accepted (it normalises and may bypass some settings) rather
+        # than what was requested. Best-effort: the write already succeeded.
+        try:
+            _note_sensor_cfg(
+                body.mac,
+                await _sensor_api().get_sensor_config(body.target_ip, body.mac, body.password))
+        except Exception as e:
+            logging.getLogger('host').warning(
+                'sensor config readback after set failed (capture metadata may '
+                'be stale): %s', e)
         return {'ok': True}
     except Exception as e:
         raise _http_from(e)

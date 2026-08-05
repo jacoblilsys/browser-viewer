@@ -226,6 +226,11 @@ async def get_sensor_config(target_ip: str, mac: str, password: str) -> dict:
         },
         'fft_size':   _pb.FftSize.Name(sc.fft_size),
         'fft_precision': _safe_enum_name(_pb.FftPrecision, sc.fft_precision),
+        # Software DC removal (fw 0x1032+). Firmware ≤ 0x1031 does not send tag 7,
+        # so the field decodes as UNDEFINED (0) — report that as OFF, not an error,
+        # which is also what the sensor is actually doing.
+        'dc_removal': _safe_enum_name(_pb.DcRemoval, sc.dc_removal)
+                      if sc.dc_removal else 'DC_REMOVAL_OFF',
     }
 
 
@@ -240,6 +245,7 @@ async def set_sensor_config(
     filter_cutoff: Optional[str] = None,
     fft_size: Optional[str] = None,
     fft_precision: Optional[str] = None,
+    dc_removal: Optional[str] = None,
 ):
     # Fetch current config first so we only overwrite supplied fields.
     get_req = _pb.Request(msg_version=1)
@@ -263,6 +269,11 @@ async def set_sensor_config(
         # Takes effect immediately on the sensor (one FFT frame is dropped
         # during the engine switch); no reboot required.
         sc.fft_precision = _pb.FftPrecision.Value(fft_precision)
+    if dc_removal is not None:
+        # Software high-pass. Orthogonal to `filter` — setting one does not
+        # disturb the other. No reboot, but like every sensor setting it
+        # re-inits sampling and drops roughly one 10 ms block.
+        sc.dc_removal = _pb.DcRemoval.Value(dc_removal)
 
     set_req = _pb.Request(msg_version=1)
     set_req.set_sensor_config.CopyFrom(sc)

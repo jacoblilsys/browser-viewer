@@ -173,18 +173,45 @@ In **Sensor Config**, `FFT Precision` selects the on-device FFT numeric format (
 
 The change takes effect immediately (the sensor drops one FFT frame during the switch — no reboot). The backend detects the format per-column from frame metadata, so no host setting is required. Turn on **Log magnitude scale** in a window's **⚙ settings** to actually see float32's extra dynamic range.
 
+## DC removal (software high-pass, firmware ≥ 0x1032)
+
+**Sensor Config → DC Removal** enables a software first-order high-pass that strips the DC / gravity offset from the samples. It runs on the sensor downstream of the FIFO and the decimator, per axis, and is **independent of the hardware `Filter` selector** — LPF2 anti-aliasing and DC removal can both be active, which is the point of the feature. Read with Get Config, written with Apply.
+
+| Cutoff | −3 dB | Settling to <1 % |
+|---|---:|---:|
+| 0.1 Hz | 0.1 Hz | 7.3 s |
+| 0.5 Hz | 0.5 Hz | 1.5 s |
+| 1 Hz | 1 Hz | 730 ms |
+| 2 Hz | 2 Hz | 370 ms |
+| 5 Hz | 5 Hz | 150 ms |
+| 10 Hz | 10 Hz | 75 ms |
+
+- **Single pole, −6 dB/octave** — at a 1 Hz corner a 2 Hz component is still ~3 dB down, so pick a corner well below the lowest frequency of interest.
+- Cutoffs are **absolute Hz** and do not move with the ODR divisor (unlike the hardware filter's ODR/N corners).
+- Affects **both the raw and FFT streams**. **FFT bin 0 collapses** to ~0 while DC removal is on; it reports |DC| when off, so anything using bin 0 as a DC/tilt indicator changes meaning.
+- With **vector axis modes** the filter is applied per axis *before* the magnitude, giving a rectified AC magnitude — single-axis vibration then appears at double frequency. Not recommended together with the FFT stream.
+- The sensor **auto-bypasses** it during a calibration run and while the hardware `High-pass` or `Slope filter` is selected (the stored value is kept; the UI flags this next to the dropdown).
+- Applied without a reboot, but like every sensor setting it re-inits sampling: expect a ~10 ms gap, which the traffic monitor counts as **missing** frames.
+- Firmware ≤ 0x1031 has no such field — the viewer then reads back `DC_REMOVAL_OFF` and the setting silently has no effect.
+
+Enable and cutoff share a single wire enum, so choosing **Off** does not remember the cutoff. The viewer caches the last non-Off choice per sensor in `localStorage` and offers a *restore* link under the dropdown.
+
 ## Logging formats
 
 Toggle between formats in the chart toolbar dropdown (while not actively logging).
 
-- **TSV** (`.log`) — Tab-separated values. Human-readable, open in any text editor or spreadsheet. Includes comment header with device ID, sample rate, and units.
+- **TSV** (`.log`) — Tab-separated values. Human-readable, open in any text editor or spreadsheet. Includes comment header with device ID, sample rate, units, and the last-known sensor settings.
 - **HDF5** (`.h5`) — Chunked + gzip compressed (float32). Read with Python (`h5py`, `scipy`), MATLAB, R, Julia. Includes metadata attributes and FFT data.
+
+Sensor settings are not carried in the packet header, so both formats stamp the **last config read or written through the viewer** for that device (`dc_removal`, `odr_div`, `full_scale`, `axes`, `filter_enabled`, `filter_cutoff`, `fft_size`, `fft_precision`) — without it a saved capture would not record whether the signal was high-passed, or at what corner. Press **Get Config** once before logging if the viewer has not talked to the sensor yet; a file already open keeps the values it was opened with.
 
 ### HDF5 file structure
 
 ```
 / (root)
-├── attrs: device_id, stream_uid, sample_rate_hz, created_at
+├── attrs: device_id, stream_uid, sample_rate_hz, created_at,
+│          dc_removal, odr_div, full_scale, axes, filter_enabled,
+│          filter_cutoff, fft_size, fft_precision   — last-known sensor config
 ├── data/
 │   ├── accel_x     (N,)        float32  — raw samples, attrs: unit
 │   ├── accel_y     (N,)        float32
@@ -341,7 +368,7 @@ Expanding the Network Config dropdown and pressing Get Config will receive the n
 
 ![alt text](frontend/network_config.png)
 
-Expanding the Sensor Config dropdown shows the different configurations such as full scale range, Output Data Rate (ODR) and filter and FFT selections. 
+Expanding the Sensor Config dropdown shows the different configurations such as full scale range, Output Data Rate (ODR), filter and FFT selections, and — on firmware 0x1032 and later — the software [DC Removal](#dc-removal-software-high-pass-firmware--0x1032) high-pass. 
 ![alt text](frontend/sensor_config.png)
 
 ## Trouble shooting
