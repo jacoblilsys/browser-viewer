@@ -1896,6 +1896,35 @@ document.getElementById('btn-get-info').addEventListener('click', async () => {
   const dbgEl = document.getElementById('info-debug');
   if (cpuEl) cpuEl.textContent = (d.cpu_usage != null) ? `${d.cpu_usage.toFixed(1)} %` : '—';
   if (dbgEl) dbgEl.textContent = (d.debug_str != null && d.debug_str !== '') ? d.debug_str : '—';
+  // Firmware version, and the FFT magnitude scale it implies. 0x1033 changed
+  // the numeric value of every FFT bin with no wire-format change, so nothing
+  // in the stream itself reveals which scale a sensor is on — this Get Info is
+  // what tells the backend, and it re-normalises older sensors from here on.
+  const fwEl = document.getElementById('info-fw');
+  if (fwEl) fwEl.textContent = (d.firmware_version != null)
+    ? `0x${d.firmware_version.toString(16)}` : '—';
+  const scEl = document.getElementById('info-fft-scale');
+  const scWrap = document.getElementById('info-fft-scale-wrap');
+  if (scEl && scWrap) {
+    if (d.fft_scaling === 'legacy_compensated') {
+      scEl.textContent = 'legacy — compensated';
+      scEl.className = 'ntp-status warn';
+      scWrap.title = 'This sensor predates firmware 0x1033, whose FFT magnitudes were '
+        + 'not normalised (Q15 8× low, float32 fft_size/4 too high, DC not halved). '
+        + 'The viewer re-normalises its bins onto the 0x1033 amplitude scale, so a tone '
+        + 'of amplitude A reads A. Spectra recorded before this Get Info are on the raw scale.';
+      scWrap.style.display = '';
+    } else if (d.fft_scaling === 'normalised') {
+      scEl.textContent = 'normalised';
+      scEl.className = 'ntp-status ok';
+      scWrap.title = 'FFT magnitudes are an amplitude spectrum straight from the sensor '
+        + '(firmware 0x1033+): a tone of amplitude A reads A, at any fft_size and in '
+        + 'either precision.';
+      scWrap.style.display = '';
+    } else {
+      scWrap.style.display = 'none';
+    }
+  }
 });
 
 // ── DC removal (software high-pass, firmware 0x1032+) ────────────────────────
@@ -2289,11 +2318,23 @@ function renderDeviceList(devices) {
 }
 
 function selectSensor(d) {
+  const changed = !selectedSensor || selectedSensor.mac !== d.mac;
   selectedSensor = { ip: d.ip, mac: d.mac };
   selectedInfo.textContent = `${d.mac}  (${d.ip})`;
   deviceListEl.querySelectorAll('.device-item').forEach(el => {
     el.classList.toggle('selected', el.querySelector('.device-mac')?.textContent === d.mac);
   });
+  // The status row holds the last Get Info result, which belongs to whichever
+  // sensor was selected then — clear it rather than attribute one sensor's CPU,
+  // firmware or FFT scale to another.
+  if (changed) {
+    ['info-cpu', 'info-debug', 'info-fw'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = '—';
+    });
+    const scWrap = document.getElementById('info-fft-scale-wrap');
+    if (scWrap) scWrap.style.display = 'none';
+  }
 }
 
 // ── setup modal ──────────────────────────────────────────────────────────────

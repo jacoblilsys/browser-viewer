@@ -122,7 +122,7 @@ The backend accumulates full-rate samples (e.g. 26.7 kHz) and sends a downsample
 
 - **NetworkReceiver** — TCP listener in a background thread. Frames are length-prefixed (4-byte big-endian uint32 + protobuf payload).
 - **UDPReceiver** — UDP listener in a background thread (bound to `UDP_PORT`). Each datagram carries a 12-byte chunk header (`packet_id`, `chunk_idx`, `chunk_count`, `chunk_size`, `total_size`); chunks are reassembled by `(source_ip, packet_id)` into the same length-prefixed frame the TCP path produces, then fed to the identical decoder. Lost/timed-out packets are counted and surfaced as diagnostics. Runs alongside TCP — either stream (raw / FFT) can be TCP or UDP independently.
-- **protobuf_decoder** — Decodes protobuf into `FrameData` (numpy arrays per axis) and `FFTFrameData`. FFT bins are decoded per-column from their `MetaData` dtype (`data_numpy_type`/`data_numpy_bytes`): Q15 signed int16, Q15 unsigned uint16 (vector modes), or IEEE-754 float32.
+- **protobuf_decoder** — Decodes protobuf into `FrameData` (numpy arrays per axis) and `FFTFrameData`. FFT bins are decoded per-column from their `MetaData` dtype (`data_numpy_type`/`data_numpy_bytes`): Q15 signed int16, Q15 unsigned uint16 (vector modes), or IEEE-754 float32. Magnitudes are converted with the column's own `float_factor` and nothing else — pre-0x1033 sensors are re-normalised onto that scale once their firmware version is known (see [FFT amplitude scale](#fft-amplitude-scale-firmware--0x1033)).
 - **Broadcaster** — Accumulates samples, emits min/max/last per axis at `WS_FPS` Hz via WebSocket. FFT spectra are throttled to 30 Hz. Supports pause/resume to stop sending data to browsers without affecting logging.
 - **LogWriter / LogManager** — Full-rate logging to TSV or HDF5 (selectable in the UI).
 - **MDNSScanner** — Discovers sensors on the network via `_nw-config._udp.local.` mDNS service.
@@ -135,7 +135,7 @@ The backend accumulates full-rate samples (e.g. 26.7 kHz) and sends a downsample
 - **Charts area** — Floating draggable/resizable windows with snap-to-grid (60px). Each chart window's titlebar has a **⚙ settings** button housing all per-window options — Y-axis scale (auto/fixed), log magnitude scale (FFT/PSD/spectrogram), and window length (raw). Create any combination of:
   - Raw Waveform (XYZ) — live acceleration traces
   - FFT (X/Y/Z) — frequency spectrum per axis, X-axis scaled by actual sample rate
-  - PSD (X/Y/Z) — power spectral density per axis, `(m/s²)²/Hz`. Computed as a **one-sided, Hann-windowed, density-scaled periodogram** (`S_k = 2·|X_k|²/(fs·Σw²)`, factor 1 at DC) — matching `scipy.signal.periodogram(x, fs, window='hann', scaling='density')`, so levels agree with an FFT computed directly from the raw samples.
+  - PSD (X/Y/Z) — power spectral density per axis, `(m/s²)²/Hz`. Derived from the sensor's amplitude spectrum as a **one-sided, Hann-windowed density** (`S_k = a_k²/(2·ENBW·Δf)`, ENBW = 1.5 bins) — matching `scipy.signal.periodogram(x, fs, window='hann', scaling='density')`, so levels agree with an FFT computed directly from the raw samples. See [FFT amplitude scale](#fft-amplitude-scale-firmware--0x1033).
 - **Sidebar** — Device list (auto-discovered via mDNS), selected sensor controls (incl. live CPU load, firmware debug string, and runtime FFT ▶/■), sensor config (full scale, axes, ODR, filter, FFT size, and Q15/float32 FFT precision), network config (incl. per-stream TCP/UDP transport and NTP mode: poll/listen/disabled)
 - **Floating console** — Toggleable JSON output window for sensor API responses
 - **Traffic Monitor** (`Monitor` toggle) — a floating panel showing per-stream health: RAW and FFT **received vs missing** frames (missing inferred from `sequence_number` gaps, so it works over both TCP and UDP), loss %, rates, and transport; plus UDP link stats (datagrams, packets reassembled, lost packets/chunks). **Enabling it pauses chart streaming to the browser** (the backend keeps receiving, counting, and logging) to minimize load — ideal for long logging runs where you only want to watch for dropouts. Logging works normally in this mode. The panel's **Reset** zeroes all counters (base + per-stream + UDP).
@@ -172,6 +172,42 @@ In **Sensor Config**, `FFT Precision` selects the on-device FFT numeric format (
 - **Float32** — IEEE-754, 4 bytes/bin, ~144 dB. Reveals spectral content near the sensor's ~75 µg/√Hz noise floor that Q15 rounds to zero. Roughly doubles FFT bandwidth.
 
 The change takes effect immediately (the sensor drops one FFT frame during the switch — no reboot). The backend detects the format per-column from frame metadata, so no host setting is required. Turn on **Log magnitude scale** in a window's **⚙ settings** to actually see float32's extra dynamic range.
+
+Both precisions now read the **same physical value** — see below.
+
+## FFT amplitude scale (firmware ≥ 0x1033)
+
+FFT magnitudes are an **amplitude spectrum**: a tone of amplitude `A` reads `A` at its bin, and a constant offset `A` reads `A` in bin 0 — for every `fft_size` and in either precision. The conversion to SI is exactly what the frame metadata declares, with no host-side correction factor:
+
+```
+value_SI = raw × post_unit_scaling.float_factor × 10^si_unit_scaling_base10_exp
+```
+
+`float_factor` is read per column, per frame, so a future firmware normalisation change is absorbed there with no host change.
+
+PSD is derived from that amplitude with the Hann window's ENBW of 1.5 bins:
+
+```
+Δf  = sample_rate / fft_size
+PSD = amplitude² / (2 × 1.5 × Δf)        → (unit)²/Hz
+```
+
+which is identically the one-sided Hann-windowed density periodogram, so levels agree with `scipy.signal.periodogram(x, fs, window='hann', scaling='density')` computed from the raw samples. The test suite checks both the amplitude scale (against the firmware's reference implementation, N = 256…2048) and the PSD against that periodogram.
+
+### Older firmware is compensated — press Get Info first
+
+Firmware 0x1030–0x1032 shipped un-normalised magnitudes, and differently per transport: **Q15 was 8× low** (an implicit `1/(2N)` from the CMSIS Q15 pipeline), **float32 was `fft_size/4`× high** (never normalised at all — changing FFT size alone scaled every value), and neither halved bin 0.
+
+Nothing on the wire distinguishes the two eras: 0x1033 changed no field, dtype or metadata value, only the numbers. The viewer therefore keys off the firmware version, which it learns from **Get Info**:
+
+- **Before** Get Info, or on 0x1033+, magnitudes are taken as normalised — the documented behaviour.
+- **After** Get Info on a sensor reporting < 0x1033, its bins are re-normalised onto the 0x1033 scale (Q15 ×8, float32 ×4/N, and half that at DC) from the next frame on, so plots, PSD and captures are all in one convention. The **FFT scale** chip in *Selected Sensor* turns amber to say so, and the console logs it.
+
+Consequences worth knowing:
+
+- Spectra recorded from an old sensor **before** the first Get Info are on the raw firmware scale. HDF5 captures record which convention they hold (`/fft` attrs `magnitude_convention`, `legacy_scaling`).
+- Comparing captures across the 0x1033 boundary: int16 readings shift **8× up**, float32 **`fft_size/4`× down**.
+- Firmware < 0x1033 also emitted **duplicate FFT frames at `fft_size` 256** (byte-identical, distinct `sequence_number`) — roughly half the columns of a spectrogram recorded at that size. Fixed on the sensor in 0x1033; the viewer's spectrogram and HDF5 `mag_*`/`psd_*` rows are in frame arrival order, which stays a correct time base at every size.
 
 ## DC removal (software high-pass, firmware ≥ 0x1032)
 
@@ -217,9 +253,11 @@ Sensor settings are not carried in the packet header, so both formats stamp the 
 │   ├── accel_y     (N,)        float32
 │   └── accel_z     (N,)        float32
 └── fft/                                  — present when FFT streaming is active
-    ├── attrs: fft_bins, fft_size, unit
+    ├── attrs: fft_bins, fft_size, unit, magnitude_convention,
+    │          psd_definition, legacy_scaling   — which amplitude scale mag_*
+    │          holds, and whether it was re-normalised from pre-0x1033 firmware
     ├── freq_hz     (bins,)     float32  — frequency axis
-    ├── mag_x       (M, bins)   float32  — magnitude spectra (M frames × bins)
+    ├── mag_x       (M, bins)   float32  — amplitude spectra (M frames × bins)
     ├── mag_y       (M, bins)   float32
     ├── mag_z       (M, bins)   float32
     ├── psd_x       (M, bins)   float32  — power spectral density

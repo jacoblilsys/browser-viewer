@@ -168,6 +168,7 @@ class FFTFrameData:
     psd: Dict[str, list]                   # PSD: {'x': [...], ...} in (unit)²/Hz
     unit: str
     no_time_sync: bool = False             # Header.flags FLAG_NO_TIME_SYNC — clock not disciplined
+    legacy_scaling: bool = False           # bins re-normalised from pre-0x1033 firmware
 
 
 # ── decoder ──────────────────────────────────────────────────────────────────
@@ -182,6 +183,56 @@ def _device_id_str(raw: bytes) -> str:
 _logged_streams: set = set()
 
 _sample_rate = 26667.0  # Updated from FrameData when available
+
+
+# ── FFT magnitude normalisation across the 0x1033 firmware boundary ──────────
+#
+# Firmware 0x1033 normalised both FFT transports onto one physically defined
+# scale: a tone of amplitude A LSB reads A LSB, for every fft_size and both
+# precisions (firmware note 2026-08-06). `float_factor × 10^exp` from the
+# frame metadata is therefore the *whole* conversion to SI — no host-side fudge.
+#
+# Older firmware shipped un-normalised magnitudes, differently per transport:
+#   Q15     — 8× low, size-independent (CMSIS `arm_rfft_q15`'s internal 1/N plus
+#             `arm_cmplx_mag_q15`'s 2.14 output gave an implicit 1/(2N))
+#   float32 — N/4× high (`arm_rfft_fast_f32` output was never normalised)
+# and neither halved bin 0. Nothing on the wire distinguishes the two eras, so
+# we key off the firmware version read through the config API (Get Info). A
+# device we have not queried is taken at the documented word — already
+# normalised — so the correct-by-spec path is the default and the compensation
+# only ever engages on a version we positively know to be old.
+FFT_NORM_FW = 0x1033
+
+_fw_version: Dict[str, int] = {}
+
+# Last FFT scaling mode logged per device, so the console reports it once and
+# again on change rather than every frame.
+_fft_mode_logged: Dict[str, str] = {}
+
+
+def note_firmware_version(mac: str, version: int) -> None:
+    """Record a device's firmware version (from get_sensor_info). Keyed by MAC
+    in the same 'aa:bb:cc:dd:ee:ff' form as FrameData.device_id."""
+    if isinstance(version, int) and version > 0:
+        _fw_version[mac.lower()] = version
+
+
+def fft_scaling_mode(mac: str) -> str:
+    """'legacy_compensated' if this device's FFT bins need re-normalising onto
+    the 0x1033 scale, else 'normalised' (also when the version is unknown)."""
+    v = _fw_version.get(mac.lower())
+    return 'legacy_compensated' if v is not None and v < FFT_NORM_FW else 'normalised'
+
+
+def _legacy_bin_gain(is_float: bool, fft_bins: int, fft_size: int) -> np.ndarray:
+    """Per-bin factor taking pre-0x1033 magnitudes onto the 0x1033 scale:
+    ×8 (Q15) or ×4/N (float32), and half that at bin 0 — 0x1033 halves DC,
+    because the factor of two in its normalisation accounts for a real tone's
+    energy splitting across ±f, which does not apply to a constant offset."""
+    g = (4.0 / fft_size) if is_float else 8.0
+    gain = np.full(fft_bins, g)
+    gain[0] = g * 0.5
+    return gain
 
 
 def decode_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FrameData | None':
@@ -316,6 +367,9 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
     device_id = _device_id_str(header.device_id)
     stream_uid = header.stream_uid
 
+    mode = fft_scaling_mode(device_id)
+    legacy = mode == 'legacy_compensated'
+
     # Log once per FFT stream
     stream_key = (device_id, stream_uid, 'fft')
     if stream_key not in _logged_streams:
@@ -323,6 +377,18 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         _log.info('New FFT stream %s uid=%d  fft_size=%d  bins=%d  rate=%.1f Hz  %d meta cols',
                   device_id, stream_uid, fft_size, fft_bins,
                   fft.actual_frame_rate_hz, len(fft.meta_data))
+    # Announce the magnitude scale in use, and again whenever it changes — a
+    # Get Info mid-stream is what tells us a device is on pre-0x1033 firmware,
+    # so compensation can engage after the stream is already running.
+    if _fft_mode_logged.get(device_id) != mode:
+        _fft_mode_logged[device_id] = mode
+        if legacy:
+            _log.warning('FFT %s: firmware 0x%04x predates 0x%04x — re-normalising '
+                         'magnitudes onto the 0x%04x amplitude scale',
+                         device_id, _fw_version.get(device_id, 0), FFT_NORM_FW, FFT_NORM_FW)
+        else:
+            _log.info('FFT %s: magnitudes taken as normalised (firmware >= 0x%04x '
+                      'or version unknown)', device_id, FFT_NORM_FW)
 
     # Build per-axis column descriptors from MetaData.
     #
@@ -333,7 +399,7 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
     # (4 B, ~144 dB dynamic range). Different axes could in principle differ,
     # so each column is decoded on its own dtype.
     #
-    # descriptor tuple: (axis_name, np.dtype, bytes_per_bin, scale_factor)
+    # descriptor tuple: (axis_name, np.dtype, bytes_per_bin, scale_factor, legacy_gain)
     columns: list = []
     unit = 'm/s²'
     for md in fft.meta_data:
@@ -343,48 +409,52 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         per_bin = md.data_numpy_bytes or 2
         dtype = np.dtype(f'{endian}{kind}{per_bin}')
         is_float = (md.data_numpy_type == NumpyType.NUMPY_TYPE_FLOATING_POINT)
-        # _scale_factor(md) is the firmware-documented conversion
-        # (float_factor × 10^si_unit_scaling_base10_exp; float_factor is
-        # identical for both precisions). The extra × fft_size cancels the
-        # CMSIS `arm_rfft_q15` internal 1/N block-float scaling; the float32
-        # engine (`arm_rfft_fast_f32`) is un-scaled, so float32 gets no ×fft_size.
-        # Confirmed by firmware: float32 FFT output is un-scaled (see the FFT
-        # scaling note); f32_mag_at_bin == fft_size × q15_mag_at_bin for the same input.
+        # From 0x1033 the metadata's own conversion is the whole story:
+        #   value_SI = raw × float_factor × 10^si_unit_scaling_base10_exp
+        # for both precisions and every fft_size. No ×fft_size, no per-precision
+        # special case — see the FFT_NORM_FW block above for what the two older
+        # transports did instead and how a known-old device is compensated.
         sf = _scale_factor(md)
-        if not is_float:
-            sf *= fft_size  # Q15/uint16 block-float compensation (int paths only)
+        legacy_gain = _legacy_bin_gain(is_float, fft_bins, fft_size) if legacy else None
         u = _UNIT_STR.get(md.data_unit, '')
         if u:
             unit = u
-        columns.append((name, dtype, per_bin, sf))
+        columns.append((name, dtype, per_bin, sf, legacy_gain))
 
     if not columns:
         # Legacy fallback: no metadata → assume int16 Q15 columns for x/y/z,
-        # derived from payload length (preserves pre-metadata behaviour).
+        # derived from payload length. Firmware old enough to omit metadata
+        # predates 0x1033 unconditionally, so its bins always need the Q15
+        # re-normalisation; with no float_factor to read there is no SI
+        # conversion available, so these stay in raw LSB.
         default_axes = ['x', 'y', 'z']
         n = len(raw_payload) // (fft_bins * 2)
+        gain = _legacy_bin_gain(False, fft_bins, fft_size)
         for i in range(n):
             name = default_axes[i] if i < len(default_axes) else f'ch{i}'
-            columns.append((name, np.dtype('<i2'), 2, float(fft_size)))
+            columns.append((name, np.dtype('<i2'), 2, 1.0, gain))
 
     # Prefer _sample_rate from raw FrameData (actual measured rate) over the
     # FFT header's nominal rate, which firmware may not update correctly.
     fft_rate = _sample_rate if _sample_rate != 26667.0 else (
         fft.actual_frame_rate_hz if fft.actual_frame_rate_hz > 0 else _sample_rate
     )
-    # One-sided power spectral density (periodogram), matching
-    #   scipy.signal.periodogram(x, fs, window='hann', scaling='density'):
-    #     S_k = 2 * |X_k|^2 / (fs * Σw²)        [factor 1 at DC / Nyquist]
-    # `scaled` (below) is |X_k| in m/s² — the device's un-normalised windowed
-    # DFT magnitude, correctly calibrated by the sensor. Only this normalisation
-    # was wrong before: it used |X|²/Δf, overstating the level by ~(3/16)·N².
-    # Verified against the ~75 µg/√Hz noise floor → correct floor ≈ 5.4e-7
-    # (m/s²)²/Hz. The device applies a Hann window (firmware note 2026-07-02);
-    # a periodic Hann of length N has Σw² = 3N/8.
-    win_power = (3.0 / 8.0) * fft_size            # Σ w_n²  (periodic Hann)
-    psd_scale = 2.0 / (fft_rate * win_power)       # one-sided density scale
+    # One-sided power spectral density, still matching
+    #   scipy.signal.periodogram(x, fs, window='hann', scaling='density')
+    # but expressed on the 0x1033 amplitude spectrum: `scaled` (below) is the
+    # physical amplitude a_k, not the raw windowed-DFT magnitude |X_k|, so the
+    # Σw² normalisation folds into the window's ENBW (1.5 bins for Hann):
+    #     S_k = a_k² / (2 · ENBW · Δf) = a_k² / (3Δf)
+    # Identical to 2·|X_k|²/(fs·Σw²) after substituting a_k = |X_k|·4/N and
+    # Σw² = 3N/8 for a periodic Hann — the firmware note's PSD recipe and the
+    # periodogram definition agree exactly.
+    delta_f = fft_rate / fft_size                 # bin width
+    psd_scale = 1.0 / (3.0 * delta_f)             # = 1/(2·ENBW·Δf), ENBW = 1.5 bins
     psd_bin_scale = np.full(fft_bins, psd_scale)
-    psd_bin_scale[0] = psd_scale / 2.0            # DC bin: factor 1, not 2
+    # DC gets ×2, not ÷2: the periodogram does not double bin 0, but the
+    # firmware already halved its *amplitude*, and undoing that in power costs
+    # a factor of four — net ×2 relative to the other bins.
+    psd_bin_scale[0] = psd_scale * 2.0
     # (Nyquist is not present — fft_bins = N/2 covers k = 0..N/2-1.)
 
     magnitudes: Dict[str, list] = {}
@@ -392,15 +462,17 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
     # Walk the payload column by column at a running offset — firmware may send
     # fewer axes than meta_data entries (e.g. single-axis mode with 3 metadata).
     offset = 0
-    for name, dtype, per_bin, sf in columns:
+    for name, dtype, per_bin, sf, legacy_gain in columns:
         col_bytes = fft_bins * per_bin
         if col_bytes <= 0 or offset + col_bytes > len(raw_payload):
             break
         raw_slice = np.frombuffer(raw_payload[offset:offset + col_bytes], dtype=dtype).astype(np.float64)
         offset += col_bytes
         scaled = raw_slice * sf
+        if legacy_gain is not None:
+            scaled = scaled * legacy_gain      # pre-0x1033 → 0x1033 amplitude scale
         magnitudes[name] = scaled.tolist()
-        # PSD = 2·|X_k|² / (fs·Σw²)  → (unit)²/Hz  (one-sided, Hann-corrected)
+        # PSD = a_k² / (2·ENBW·Δf)  → (unit)²/Hz  (one-sided, Hann ENBW = 1.5)
         psd[name] = (scaled * scaled * psd_bin_scale).tolist()
 
     if not magnitudes:
@@ -424,6 +496,7 @@ def decode_fft_frame(payload_bytes: bytes, recv_time_ns: int) -> 'FFTFrameData |
         psd=psd,
         unit=unit,
         no_time_sync=bool(header.flags & message_pb2.Flags.FLAG_NO_TIME_SYNC),
+        legacy_scaling=legacy,
     )
 
 

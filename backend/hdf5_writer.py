@@ -118,6 +118,14 @@ class Hdf5Writer:
             grp.attrs['fft_bins'] = fft.fft_bins
             grp.attrs['fft_size'] = fft.fft_size
             grp.attrs['unit'] = fft.unit
+            # Firmware 0x1033 rescaled every FFT magnitude bin without changing
+            # the wire format, so a stored spectrum is ambiguous unless the file
+            # says which convention it is on. mag_* is an amplitude spectrum:
+            # a tone of amplitude A reads A. `legacy_scaling` records that the
+            # sensor was on older firmware and the host re-normalised its bins.
+            grp.attrs['magnitude_convention'] = 'amplitude_spectrum_fw0x1033'
+            grp.attrs['psd_definition'] = 'one_sided_density: amplitude^2/(2*ENBW*df), Hann ENBW=1.5 bins'
+            grp.attrs['legacy_scaling'] = bool(getattr(fft, 'legacy_scaling', False))
             # Store frequency axis once
             grp.create_dataset('freq_hz', data=np.array(fft.freq_hz, dtype=np.float32))
 

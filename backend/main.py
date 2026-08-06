@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from network_receiver import NetworkReceiver
 from udp_receiver import UDPReceiver
+import protobuf_decoder
 from protobuf_decoder import decode_any, FrameData, FFTFrameData
 from broadcaster import Broadcaster
 from log_writer import LogManager
@@ -617,7 +618,15 @@ def _http_from(e: Exception) -> HTTPException:
 @app.post('/api/sensor/info')
 async def sensor_info(body: SensorTarget):
     try:
-        return await _sensor_api().get_sensor_info(body.target_ip, body.mac, body.password)
+        info = await _sensor_api().get_sensor_info(body.target_ip, body.mac, body.password)
+        # The firmware version is the only way to tell which FFT magnitude
+        # normalisation a device uses — 0x1033 changed the numeric value of
+        # every bin without changing the wire format. Hand it to the decoder so
+        # older sensors get re-normalised onto the current scale, and report
+        # back which scale is in force so the UI can say so.
+        protobuf_decoder.note_firmware_version(body.mac, info.get('firmware_version', 0))
+        info['fft_scaling'] = protobuf_decoder.fft_scaling_mode(body.mac)
+        return info
     except Exception as e:
         raise _http_from(e)
 
