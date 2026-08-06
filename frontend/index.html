@@ -113,6 +113,7 @@
         <div class="btn-row">
           <button class="btn" id="btn-get-info" title="Query the selected sensor for its device information (firmware version, hardware ID, etc.)">Get Info</button>
           <button class="btn btn-danger" id="btn-reset" title="Send a reset command to the sensor — the sensor will reboot">Restart Sensor</button>
+          <button class="btn" id="btn-fw-update" title="Flash new application firmware (.sfb) onto this sensor over TFTP. The sensor is rebooted into its bootloader, the file is pushed to it, and the new version is verified after it restarts.">Update Firmware…</button>
         </div>
         <div class="stream-controls">
           <button class="btn stream-btn" id="btn-stream-start" title="Resume streaming decimated data (min/max/last per axis) to the browser at 60 Hz. Low bandwidth, continuous. Does not require a sensor to be selected — controls the backend broadcaster.">Stream ▶</button>
@@ -484,6 +485,48 @@
     <div class="btn-row" style="margin-top:.75rem">
       <button class="btn btn-primary" id="ws-apply">Apply</button>
       <button class="btn" id="ws-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Firmware update modal ── -->
+<div class="popup-overlay" id="fw-overlay" hidden>
+  <div class="popup setup-modal fw-modal">
+    <div class="popup-title">Update Firmware</div>
+    <div class="setup-info" id="fw-target">—</div>
+    <div class="setup-warning" id="fw-warning" hidden></div>
+
+    <div class="setup-section">
+      <div class="setup-heading">Firmware file</div>
+      <div class="fw-row">
+        <select id="fw-file" class="fw-file-select" title="Firmware files found in the server's firmware folders, newest first."></select>
+        <button class="btn btn-sm" id="fw-refresh" title="Rescan the server's firmware folders">&#x21bb;</button>
+        <label class="btn btn-sm fw-upload-label" title="Send a .sfb from this computer to the server, then flash it">
+          Upload file…
+          <input type="file" id="fw-upload" accept=".sfb,.bin" hidden />
+        </label>
+      </div>
+      <div class="fw-meta" id="fw-file-meta">—</div>
+      <div class="hint" id="fw-dirs"></div>
+    </div>
+
+    <div class="setup-section">
+      <div class="setup-heading">Progress</div>
+      <div class="fw-prompt" id="fw-prompt" hidden></div>
+      <ol class="fw-steps" id="fw-steps"></ol>
+      <div class="fw-progress" id="fw-progress" hidden>
+        <div class="fw-progress-track"><div class="fw-progress-fill" id="fw-progress-fill"></div></div>
+        <span class="fw-progress-pct" id="fw-progress-pct">0%</span>
+      </div>
+      <pre class="fw-log" id="fw-log">Select a firmware file and press Start Update.</pre>
+    </div>
+
+    <div class="fw-verdict" id="fw-verdict" hidden></div>
+
+    <div class="btn-row" style="margin-top:.5rem">
+      <button class="btn btn-primary" id="fw-start" title="Reboot the sensor into its bootloader, push the firmware, and verify the new version">Start Update</button>
+      <button class="btn btn-danger" id="fw-cancel" title="Abandon the update. Only possible while nothing has been sent to the sensor yet." hidden>Cancel Update</button>
+      <button class="btn" id="fw-close">Close</button>
     </div>
   </div>
 </div>

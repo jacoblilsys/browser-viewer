@@ -52,6 +52,9 @@ All settings are via environment variables. Defaults are sensible for typical us
 | `LOG_DIR`    | `./logs` | Directory where log files (TSV/HDF5) are written                         |
 | `WS_FPS`     | `60`     | WebSocket broadcast rate in frames per second                            |
 | `NETWORK_IF` | *(auto)* | Local IP of the network interface to use for sensor UDP/multicast commands. Auto-detected if not set. Set this if sensor API commands time out (e.g. `NETWORK_IF=192.168.0.200`). |
+| `FIRMWARE_DIR` | *(auto)* | Folder(s) searched for `.sfb`/`.bin` firmware, `os.pathsep`-separated. Defaults to the production `Firmwares/` tree next to the viewer, then `browser_viewer/firmware/`. See [Firmware update](#firmware-update-tftp). |
+| `TFTP_PORT`  | `69`     | TFTP port on the sensor's bootloader                                     |
+| `TFTP_LOCAL_IP` | *(auto)* | Local IP to bind the TFTP client socket to. Only needed when the default route picks the wrong adapter. |
 
 ### Examples
 
@@ -155,6 +158,66 @@ The backend accumulates full-rate samples (e.g. 26.7 kHz) and sends a downsample
 
 - **Stream Start/Stop** — Pauses/resumes data broadcast to the browser. The backend continues receiving and logging data regardless. No sensor selection required.
 - **FFT ▶/■** (in Selected Sensor) — Runtime command to the sensor to start/stop FFT streaming *now* (`Command.stream_fft`), no reboot. This is distinct from **Network Config → FFT Stream**, which is the persistent boot default applied on reboot. Requires sensor selection.
+
+## Firmware update (TFTP)
+
+**Selected Sensor → Update Firmware…** flashes a new application image onto the
+selected sensor and verifies it, in one modal.
+
+The bootloader does **not** fetch firmware — in bootloader mode the sensor runs a
+TFTP *server*, and the PC pushes the file into it (WRQ). The modal drives six steps:
+
+1. **Prepare** — read the running firmware version (`get_sensor_info`), stop the
+   sensor's raw + FFT streams and pause the viewer's broadcast. Nothing may be
+   streaming while flash is written.
+2. **Reboot** — `Command.reset_device`; the sensor restarts into its bootloader.
+   **Firmware up to and including `0x102F` is exempt**: it acknowledges the reset
+   and keeps running (firmware bug), so for those the step turns into "Power-cycle the
+   sensor" — the modal shows a highlighted instruction to unplug and replug it,
+   waits (≤ 5 min) for the sensor to drop off the network and reappear in its
+   bootloader, then carries on by itself. No reset is sent to those units at all.
+   The version list is only a shortcut, not the safety net: on **any** firmware,
+   if the reset is acknowledged and the application is still answering 25 s later,
+   the updater concludes the reset did nothing and switches to the same
+   power-cycle prompt rather than uploading into a sensor that isn't listening.
+3. **Bootloader** — wait (≤ 25 s) for the mDNS record to report `mode=boot`. If it
+   never appears the upload is attempted anyway — the bootloader only waits ~42 s
+   before starting the application, so the window must not be wasted.
+4. **Upload** — TFTP push of the `.sfb`, with a live byte/percent progress bar.
+5. **Restart** — poll `get_sensor_info` until it reports a **non-zero**
+   `firmware_version`. The bootloader answers config requests too, but reports
+   `0x0` — the application version only exists once the application is running, so
+   a non-zero version is the proof the image installed and the sensor rebooted.
+   (An mDNS record is not proof: it can be a stale one served from the cache.)
+   Once the bootloader has been answering for 5 s, `boot_now` is sent to skip its
+   ~42 s countdown — after the upload only, never during the window the upload
+   needs. Resent up to 3 times, 15 s apart, in case the datagram is lost; if the
+   bootloader refuses it, the countdown is simply allowed to run.
+6. **Verify** — compare the reported version with the one in the file name
+   (`…_APP_1033.sfb` → `0x1033`). Mismatch fails the update.
+
+Failures report *cause* and *what to do* rather than a raw exception, and the log
+of every step stays on screen.
+
+**Cancel** appears while the job is still at prepare/reboot/bootloader — nothing
+has reached the sensor yet, so backing out is free (useful when a power cycle
+turns out to be impractical). It is refused from the upload onwards: interrupting
+a flash write is how a sensor ends up with no working firmware.
+
+**Auto fast-boot is forced off for the whole run** and restored afterwards. A
+`boot_now` sent while the sensor waits in its bootloader jumps it into the
+application and the upload has nowhere to land; `/api/sensor/boot` returns **409**
+during an update so another browser tab cannot break the flash either.
+
+Firmware files come from the folders in `FIRMWARE_DIR` (or, unset, the production
+`Firmwares/` tree next to the viewer), plus anything sent with **Upload file…**,
+which stores it in `backend/fw_uploads/`. Files whose names look like combined
+SBSFU images (bootloader + application) are flagged — those are flashed over
+SWD/ST-Link, not pushed into a running bootloader. Re-flashing the same version
+and downgrades are allowed but warned about.
+
+> ⚠ Do not unplug the LAN cable or cut PoE power during an update. The whole run
+> takes about a minute.
 
 ## Transport (TCP / UDP)
 
@@ -304,6 +367,12 @@ Generates a 3D surface plot and a 2D spectrogram heatmap (saved as PNG). Options
 | POST   | `/api/stream/fft/start` | Start FFT streaming on sensor      |
 | POST   | `/api/stream/fft/stop`  | Stop FFT streaming on sensor       |
 | POST   | `/api/sensor/reset`    | Reset the sensor                    |
+| POST   | `/api/sensor/boot`     | Fast-boot a sensor out of its bootloader (409 during a firmware update) |
+| GET    | `/api/fw/list`         | Firmware files the server can offer, and the folders searched |
+| POST   | `/api/fw/upload`       | Upload a `.sfb` (raw body, `?name=…`) to the server's `fw_uploads/` |
+| POST   | `/api/fw/start`        | Start a firmware update on one sensor |
+| GET    | `/api/fw/status`       | Live progress of the running/last firmware update |
+| POST   | `/api/fw/cancel`       | Abandon a job that hasn't sent firmware yet (409 from the upload onwards) |
 | POST   | `/api/ntp/check`       | Test if an NTP server is reachable  |
 
 ## NTP Server Setup

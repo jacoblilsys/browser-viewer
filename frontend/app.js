@@ -2270,7 +2270,13 @@ async function refreshDevices() {
   }
 }
 
+// Last mDNS record per MAC — mode (app/boot) and the announced firmware
+// version, which the firmware updater needs to spot a downgrade or a re-flash
+// of the version already running.
+const _devicesByMac = {};
+
 function renderDeviceList(devices) {
+  for (const d of devices) _devicesByMac[d.mac] = d;
   if (!devices.length) {
     deviceListEl.innerHTML = '<div class="device-empty">No sensors found</div>';
     return;
@@ -2679,6 +2685,10 @@ if (localStorage.getItem('theme') === 'light') {
 
 // Auto fast-boot
 async function _autoBootSensor(device) {
+  // A firmware update lives inside the bootloader window — fast-booting the
+  // sensor out of it now would leave the upload with nowhere to land. (The
+  // backend refuses boot_now during a flash too, for other tabs.)
+  if (_fwRunning) return;
   if (_bootedMacs.has(device.mac)) return;
   _bootedMacs.add(device.mac);
   try {
@@ -2693,6 +2703,347 @@ async function _autoBootSensor(device) {
     outInfo.textContent = `Auto fast-boot failed for ${device.mac}: ${err.message}`;
   }
 }
+
+// ── firmware update modal ────────────────────────────────────────────────────
+// Drives the backend's TFTP client-push flow: reboot into the bootloader, push
+// the .sfb, wait for the sensor to come back, verify the version. Auto fast-boot
+// is forced off for the duration and restored when the job ends — a boot_now
+// during the bootloader window would abort the update.
+const fwOverlay   = document.getElementById('fw-overlay');
+const fwSel       = document.getElementById('fw-file');
+const fwMeta      = document.getElementById('fw-file-meta');
+const fwWarning   = document.getElementById('fw-warning');
+const fwStepsEl   = document.getElementById('fw-steps');
+const fwLogEl     = document.getElementById('fw-log');
+const fwProgress  = document.getElementById('fw-progress');
+const fwFill      = document.getElementById('fw-progress-fill');
+const fwPct       = document.getElementById('fw-progress-pct');
+const fwVerdict   = document.getElementById('fw-verdict');
+const fwStartBtn  = document.getElementById('fw-start');
+const fwCancelBtn = document.getElementById('fw-cancel');
+const fwPrompt    = document.getElementById('fw-prompt');
+
+// Firmware older than this ACKs the reset command but never reboots (firmware
+// bug, 0x102F included), so those sensors have to be power-cycled by hand
+// mid-update. Mirrors RESET_MIN_VERSION in backend/fw_update.py.
+const FW_RESET_MIN_VERSION = 0x1030;
+
+let _fwFiles       = [];
+let _fwRunning     = false;
+let _fwPollTimer   = null;
+let _fwAutoBootWas = null;   // autoBoot setting to restore when the job ends
+let _fwDevice      = null;   // the sensor this modal targets
+
+const _fwMarks = { pending: '·', active: '▸', ok: '✔', fail: '✖', skip: '⚠' };
+
+function _fwBytes(n) {
+  return `${(n || 0).toLocaleString()} bytes`;
+}
+
+// The sensor's running firmware: mDNS announces it in decimal, Get Info in the
+// Selected Sensor panel reports the same number.
+function _fwCurrentVersion() {
+  const raw = (_fwDevice && _fwDevice.fw_app) || '';
+  const v = parseInt(String(raw).trim(), 10);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function _fwSelectedFile() {
+  return _fwFiles.find(f => f.id === fwSel.value) || null;
+}
+
+async function _fwLoadList(preferId) {
+  try {
+    const r = await (await fetch('/api/fw/list')).json();
+    _fwFiles = r.files || [];
+    document.getElementById('fw-dirs').textContent =
+      _fwFiles.length ? `Searched: ${(r.dirs || []).join('  ·  ')}`
+                      : `No .sfb files found in: ${(r.dirs || []).join('  ·  ')} — `
+                        + 'use "Upload file…" or set FIRMWARE_DIR on the server.';
+    fwSel.innerHTML = '';
+    for (const f of _fwFiles) {
+      const o = document.createElement('option');
+      o.value = f.id;
+      const ver = f.version_hex ? `  [${f.version_hex}]` : '  [version unknown]';
+      o.textContent = `${f.name}${ver}${f.uploaded ? '  (uploaded)' : ''}`;
+      fwSel.appendChild(o);
+    }
+    if (preferId && _fwFiles.some(f => f.id === preferId)) fwSel.value = preferId;
+  } catch {
+    _fwFiles = [];
+    fwSel.innerHTML = '';
+    document.getElementById('fw-dirs').textContent = 'Could not read the firmware list from the server.';
+  }
+  _fwSyncFile();
+}
+
+// File description + the warnings that decide whether Start needs a second look.
+function _fwSyncFile() {
+  const f = _fwSelectedFile();
+  const cur = _fwCurrentVersion();
+  if (!f) {
+    fwMeta.textContent = 'No firmware file selected.';
+    fwWarning.hidden = true;
+    fwStartBtn.disabled = true;
+    return;
+  }
+  fwStartBtn.disabled = _fwRunning;
+  fwMeta.textContent = `${_fwBytes(f.size)}`
+    + (f.version_hex ? `  ·  firmware ${f.version_hex} (${f.version})` : '  ·  version not in the file name')
+    + (cur ? `  ·  sensor now 0x${cur.toString(16).toUpperCase()} (${cur})` : '');
+
+  const warn = [];
+  if (cur && cur < FW_RESET_MIN_VERSION) {
+    warn.push(`This sensor runs 0x${cur.toString(16).toUpperCase()}, whose reset command `
+      + 'does not actually reboot it (firmware bug). The update will pause and ask you '
+      + 'to UNPLUG the sensor and plug it back in — be at the sensor before you start.');
+  }
+  if (f.has_bootloader) {
+    warn.push('This looks like a combined SBSFU image (bootloader + application). '
+      + 'Those are flashed over SWD/ST-Link — pushing one into a running bootloader '
+      + 'will not produce a working sensor. Use an "Updates no bootloader" .sfb.');
+  }
+  if (f.version == null) {
+    warn.push('The version is not encoded in this file name, so the update cannot be '
+      + 'verified automatically — check the FW field after it restarts.');
+  } else if (cur && f.version === cur) {
+    warn.push(`The sensor is already running ${f.version_hex} — re-flashing the same version.`);
+  } else if (cur && f.version < cur) {
+    warn.push(`This is a DOWNGRADE: the sensor runs 0x${cur.toString(16).toUpperCase()} `
+      + `and this file is ${f.version_hex}.`);
+  }
+  fwWarning.hidden = !warn.length;
+  fwWarning.textContent = warn.join('\n\n');
+}
+
+function _fwRenderStatus(st) {
+  // The prompt is a blocking instruction to the operator ("unplug the sensor
+  // now") — the run cannot continue until they do it, so it goes above the steps.
+  fwPrompt.hidden = !st.prompt;
+  if (st.prompt) fwPrompt.textContent = st.prompt;
+  fwCancelBtn.hidden = !st.cancellable;
+
+  fwStepsEl.innerHTML = '';
+  for (const s of (st.steps || [])) {
+    const li = document.createElement('li');
+    li.className = s.state;
+    li.innerHTML = `<span class="fw-mark">${_fwMarks[s.state] || '·'}</span>`
+      + `<span>${s.label}</span>`
+      + (s.detail ? `<span class="fw-detail">${s.detail}</span>` : '');
+    fwStepsEl.appendChild(li);
+  }
+  const uploading = st.step === 'upload' || (st.bytes_sent > 0);
+  fwProgress.hidden = !uploading;
+  if (uploading) {
+    fwFill.style.width = `${st.progress || 0}%`;
+    fwPct.textContent = `${st.progress || 0}%`;
+  }
+  if (st.log && st.log.length) {
+    const atBottom = fwLogEl.scrollHeight - fwLogEl.scrollTop - fwLogEl.clientHeight < 30;
+    fwLogEl.textContent = st.log.join('\n');
+    if (atBottom) fwLogEl.scrollTop = fwLogEl.scrollHeight;
+  }
+
+  if (st.phase === 'done' || st.phase === 'failed') {
+    const wasHidden = fwVerdict.hidden;
+    fwVerdict.hidden = false;
+    fwVerdict.className = 'fw-verdict ' + (st.ok ? 'ok' : st.cancelled ? 'cancel' : 'fail');
+    if (st.ok) {
+      fwVerdict.textContent = `✔ Firmware updated — the sensor is running `
+        + `${st.new_version_hex || '?'} (${st.new_version}) after ${st.elapsed_s}s.`;
+    } else if (st.cancelled) {
+      fwVerdict.textContent = `⏹ Update cancelled.\n\n${st.cause}\n\n${st.fix}`;
+    } else {
+      fwVerdict.textContent = `✖ Update failed at "${st.step}".\n\n`
+        + `Cause: ${st.cause || st.error}\n`
+        + (st.error && st.cause ? `Detail: ${st.error}\n` : '')
+        + `\nWhat to do: ${st.fix || 'See the log above.'}`;
+    }
+    // The modal scrolls — bring the verdict into view the moment it appears.
+    if (wasHidden) fwVerdict.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  } else {
+    fwVerdict.hidden = true;
+  }
+}
+
+function _fwStopPolling() {
+  if (_fwPollTimer) { clearInterval(_fwPollTimer); _fwPollTimer = null; }
+}
+
+// Polling continues even if the modal is closed, so the auto fast-boot setting
+// is restored and the device list refreshed however the operator leaves it.
+function _fwStartPolling() {
+  _fwStopPolling();
+  _fwPollTimer = setInterval(async () => {
+    let st;
+    try {
+      st = await (await fetch('/api/fw/status')).json();
+    } catch {
+      return;
+    }
+    if (!fwOverlay.hidden) _fwRenderStatus(st);
+    if (st.phase === 'done' || st.phase === 'failed') {
+      _fwStopPolling();
+      _fwFinish(st);
+    }
+  }, 500);
+}
+
+function _fwFinish(st) {
+  _fwRunning = false;
+  fwStartBtn.disabled = false;
+  fwStartBtn.textContent = 'Start Update';
+  fwCancelBtn.hidden = true;
+  fwPrompt.hidden = true;
+  // Give auto fast-boot back exactly as we found it, and let it act on this
+  // sensor again if it ever stalls in the bootloader later.
+  if (_fwAutoBootWas !== null) {
+    _settings.autoBoot = _fwAutoBootWas;
+    localStorage.setItem('autoBoot', String(_fwAutoBootWas));
+    chkAutoBoot.checked = _fwAutoBootWas;
+    _fwAutoBootWas = null;
+  }
+  if (_fwDevice) _bootedMacs.delete(_fwDevice.mac);
+  outInfo.textContent = st.ok
+    ? `Firmware update OK — ${st.target.mac} now runs ${st.new_version_hex}`
+    : st.cancelled
+      ? `Firmware update cancelled — nothing was written to ${st.target.mac}`
+      : `Firmware update FAILED at "${st.step}": ${st.cause || st.error}`;
+  refreshDevices();
+}
+
+async function _fwOpen() {
+  if (!selectedSensor) {
+    showDialog({ title: 'No sensor selected',
+      message: 'Select a sensor in the device list first — the firmware is flashed onto that sensor.' });
+    return;
+  }
+  _fwDevice = { ..._devicesByMac[selectedSensor.mac], ...selectedSensor };
+  const mode = (_fwDevice.mode || '').toLowerCase();
+  document.getElementById('fw-target').textContent =
+    `Sensor: ${selectedSensor.mac}  (${selectedSensor.ip})` + (mode ? `  ·  mode ${mode}` : '');
+  fwVerdict.hidden = true;
+  fwOverlay.hidden = false;
+
+  let st = null;
+  try { st = await (await fetch('/api/fw/status')).json(); } catch { /* offline */ }
+  if (st && st.active) {
+    // A flash started earlier (or in another tab) is still running — attach to it.
+    _fwRunning = true;
+    fwStartBtn.disabled = true;
+    fwStartBtn.textContent = 'Updating…';
+    _fwRenderStatus(st);
+    _fwStartPolling();
+  } else {
+    fwLogEl.textContent = 'Select a firmware file and press Start Update.';
+    _fwRenderStatus(st && st.steps ? { ...st, log: [] } : { steps: [] });
+  }
+  await _fwLoadList(fwSel.value);
+}
+
+async function _fwDoStart() {
+  const f = _fwSelectedFile();
+  if (!f || _fwRunning) return;
+  if (!(await ensurePassword())) return;
+
+  const warnText = fwWarning.hidden ? '' : `\n\n${fwWarning.textContent}`;
+  const proceed = await new Promise((resolve) => {
+    showDialog({
+      title: 'Flash firmware to this sensor?',
+      message:
+        `Sensor: ${_fwDevice.mac}  (${_fwDevice.ip})\n`
+        + `File:   ${f.name}  (${_fwBytes(f.size)})\n\n`
+        + 'The sensor will reboot into its bootloader, receive the firmware over '
+        + 'TFTP, and restart. This takes about a minute.\n'
+        + 'Streaming is stopped and auto fast-boot is disabled until it finishes.\n\n'
+        + '⚠ Do not unplug the LAN cable or cut PoE power during the update.'
+        + warnText,
+      actions: [
+        { label: 'Flash firmware', primary: true, onClick: () => resolve(true) },
+        { label: 'Cancel', onClick: () => resolve(false) },
+      ],
+      onDismiss: () => resolve(false),
+    });
+  });
+  if (!proceed) return;
+
+  // Auto fast-boot off for the whole run — restored in _fwFinish().
+  _fwAutoBootWas = _settings.autoBoot;
+  _settings.autoBoot = false;
+  chkAutoBoot.checked = false;
+
+  _fwRunning = true;
+  fwStartBtn.disabled = true;
+  fwStartBtn.textContent = 'Updating…';
+  fwVerdict.hidden = true;
+  fwLogEl.textContent = 'Starting…';
+
+  const r = await fetch('/api/fw/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      target_ip: _fwDevice.ip, mac: _fwDevice.mac, password: inPw.value,
+      file_id: f.id,
+    }),
+  });
+  const st = await r.json();
+  if (!r.ok) {
+    _fwRunning = false;
+    fwStartBtn.disabled = false;
+    fwStartBtn.textContent = 'Start Update';
+    if (_fwAutoBootWas !== null) {
+      _settings.autoBoot = _fwAutoBootWas;
+      chkAutoBoot.checked = _fwAutoBootWas;
+      _fwAutoBootWas = null;
+    }
+    showDialog({ title: 'Could not start the update', message: st.detail || 'Unknown error' });
+    return;
+  }
+  _fwRenderStatus(st);
+  _fwStartPolling();
+}
+
+fwCancelBtn.addEventListener('click', async () => {
+  const r = await fetch('/api/fw/cancel', { method: 'POST' });
+  const d = await r.json();
+  if (!r.ok) {
+    // Almost always "too late" — the upload started between render and click.
+    showDialog({ title: 'Cannot cancel', message: d.detail || 'Unknown error' });
+    return;
+  }
+  fwCancelBtn.hidden = true;
+  fwPrompt.hidden = true;
+});
+
+document.getElementById('btn-fw-update').addEventListener('click', _fwOpen);
+fwSel.addEventListener('change', _fwSyncFile);
+document.getElementById('fw-refresh').addEventListener('click', () => _fwLoadList(fwSel.value));
+fwStartBtn.addEventListener('click', _fwDoStart);
+
+document.getElementById('fw-upload').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';                      // allow re-picking the same file
+  if (!file) return;
+  fwMeta.textContent = `Uploading ${file.name} to the server…`;
+  try {
+    const r = await fetch(`/api/fw/upload?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'upload failed');
+    await _fwLoadList(d.id);
+  } catch (err) {
+    fwMeta.textContent = `Upload failed: ${err.message}`;
+  }
+});
+
+document.getElementById('fw-close').addEventListener('click', () => { fwOverlay.hidden = true; });
+fwOverlay.addEventListener('click', (e) => {
+  // Don't let a stray backdrop click hide a running flash by accident.
+  if (e.target === fwOverlay && !_fwRunning) fwOverlay.hidden = true;
+});
 
 // ── host info in topbar ──────────────────────────────────────────────────────
 async function updateHostInfo() {

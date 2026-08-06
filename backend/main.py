@@ -37,6 +37,7 @@ from protobuf_decoder import decode_any, FrameData, FFTFrameData
 from broadcaster import Broadcaster
 from log_writer import LogManager
 from mdns_scanner import MDNSScanner
+import fw_update
 
 # ── configuration ─────────────────────────────────────────────────────────────
 
@@ -749,8 +750,70 @@ async def api_reset(body: SensorTarget):
 
 @app.post('/api/sensor/boot')
 async def api_boot_now(body: SensorTarget):
+    # A firmware update lives inside the bootloader window: boot_now would jump
+    # the sensor into the application and the upload would have nowhere to land.
+    # The UI turns auto fast-boot off for the duration, but a second browser tab
+    # (or a stale one) would not know that — so refuse it here as well.
+    if fw_update.is_active():
+        raise HTTPException(
+            status_code=409,
+            detail='A firmware update is in progress — fast-boot is blocked so the '
+                   'sensor stays in its bootloader.')
     try:
         await _sensor_api().boot_now(body.target_ip, body.mac, body.password)
         return {'ok': True}
     except Exception as e:
         raise _http_from(e)
+
+
+# ── firmware update (TFTP) ───────────────────────────────────────────────────
+
+class FwStartPayload(SensorTarget):
+    file_id: str
+    port:    int = fw_update.TFTP_PORT
+
+
+@app.get('/api/fw/list')
+async def api_fw_list():
+    """Firmware files the server can offer, plus where it looked for them."""
+    return {'files': fw_update.list_firmware(),
+            'dirs':  [str(d) for d in fw_update.firmware_dirs()]}
+
+
+@app.post('/api/fw/upload')
+async def api_fw_upload(request: Request, name: str = ''):
+    """Take a .sfb straight from the browser as a raw body (no multipart
+    dependency) and keep it in the server's upload folder."""
+    data = await request.body()
+    try:
+        return fw_update.save_upload(name, data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post('/api/fw/start')
+async def api_fw_start(body: FwStartPayload):
+    try:
+        return fw_update.start(
+            target_ip=body.target_ip, mac=body.mac, password=body.password,
+            file_id=body.file_id, port=body.port,
+            sensor_api=_sensor_api(), mdns=_mdns, broadcaster=_broadcaster)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.get('/api/fw/status')
+async def api_fw_status():
+    return fw_update.status()
+
+
+@app.post('/api/fw/cancel')
+async def api_fw_cancel():
+    """Abandon a job that is still waiting (e.g. for a power cycle). Refused
+    once the firmware is going over the wire."""
+    try:
+        return fw_update.cancel()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))

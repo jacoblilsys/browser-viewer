@@ -47,6 +47,7 @@ class MDNSScanner:
         self._interface_ip = interface_ip  # bind mDNS to this IP ('' = all)
         self._requery_stop: Optional[threading.Event] = None
         self._requery_thread: Optional[threading.Thread] = None
+        self._fast_browser: Optional[ServiceBrowser] = None
 
     def start(self):
         if self._interface_ip:
@@ -66,6 +67,7 @@ class MDNSScanner:
     def stop(self):
         if self._requery_stop:
             self._requery_stop.set()
+        self.stop_fast_discovery()
         if self._zc:
             self._zc.close()
             self._zc = None
@@ -108,6 +110,74 @@ class MDNSScanner:
                 {k: v for k, v in d.items() if not k.startswith('_')}
                 for d in self._devices.values()
             ]
+
+    def get_device_by_mac(self, mac: str) -> Optional[dict]:
+        """The freshest record for one MAC, plus how old it is.
+
+        A sensor announces a different service record in bootloader mode than in
+        application mode, and the one it just left lingers until its TTL expires
+        — so picking the most recently seen record is what tells you which mode
+        it is in right now.  Used by the firmware updater to follow a sensor
+        through reset -> boot -> app.
+        """
+        want = (mac or '').lower()
+        with self._lock:
+            cands = [d for d in self._devices.values()
+                     if (d.get('mac') or '').lower() == want]
+            if not cands:
+                return None
+            best = max(cands, key=lambda d: d.get('_seen', 0))
+            out = {k: v for k, v in best.items() if not k.startswith('_')}
+            out['age_s'] = round(time.monotonic() - best.get('_seen', 0), 1)
+            return out
+
+    def requery_now(self):
+        """Actively re-query every known service right now (blocking).
+
+        The periodic re-query runs every 30 s, which is too slow to watch a
+        sensor reboot.  Callers that are waiting on a mode change poke this.
+        """
+        if not self._zc:
+            return
+        with self._lock:
+            names = list(self._devices.keys())
+        for name in names:
+            try:
+                info = self._zc.get_service_info(SERVICE_TYPE, name, timeout=1500)
+                if info:
+                    self._on_change(self._zc, SERVICE_TYPE, name,
+                                    ServiceStateChange.Updated)
+            except Exception:
+                pass
+
+    def start_fast_discovery(self):
+        """Add a second, short-lived ServiceBrowser.
+
+        A browser queries aggressively when it starts (1 s, 2 s, 4 s …) and then
+        backs off, so a long-running one is slow to notice a service *name* it
+        has never seen — which is exactly what a sensor publishes when it drops
+        into its bootloader.  The firmware updater starts one of these for the
+        duration of a flash and cancels it afterwards.  Discoveries land in the
+        same `_on_change`, so the device table is unaffected either way.
+        """
+        if self._zc is None or self._fast_browser is not None:
+            return
+        try:
+            self._fast_browser = ServiceBrowser(
+                self._zc, SERVICE_TYPE, handlers=[self._on_change])
+            _log.debug('fast mDNS discovery started')
+        except Exception as e:
+            _log.warning('fast mDNS discovery failed to start: %s', e)
+            self._fast_browser = None
+
+    def stop_fast_discovery(self):
+        browser, self._fast_browser = self._fast_browser, None
+        if browser is not None:
+            try:
+                browser.cancel()
+                _log.debug('fast mDNS discovery stopped')
+            except Exception:
+                pass
 
     def _on_change(self, zeroconf: Zeroconf, service_type: str,
                    name: str, state_change: ServiceStateChange):

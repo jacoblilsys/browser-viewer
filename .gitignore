@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 venv/
 logs/
+fw_uploads/
 *.log
 *.h5
 *.tmp

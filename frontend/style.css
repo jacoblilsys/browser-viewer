@@ -514,7 +514,8 @@ body.light .popup {
 }
 /* Generic message/warning dialog — narrower than the setup modal */
 .msg-modal { min-width: auto; max-width: 440px; }
-.msg-modal #msg-body { margin: .25rem 0 .25rem; }
+/* Multi-line messages (the firmware confirmation lists sensor/file/warnings). */
+.msg-modal #msg-body { margin: .25rem 0 .25rem; white-space: pre-wrap; }
 .setup-modal .popup-title {
   font-size: 1.5rem;
   margin-bottom: 1rem;
@@ -1094,6 +1095,150 @@ body.light .selected-info {
 .tr-badge.tr-udp  { background: #2e8b57; color: #fff; }   /* UDP  — green */
 .tr-badge.tr-warn { background: #e67e22; color: #fff; }   /* waiting — amber */
 .tr-badge.tr-idle { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+
+/* ── firmware update modal ───────────────────────────────────────────────── */
+.fw-modal {
+  min-width: 640px;
+  max-width: 760px;
+  /* Steps + log + verdict outgrow a 720p viewport once a run finishes. */
+  max-height: 92vh;
+  overflow-y: auto;
+}
+.fw-row {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  margin-bottom: .4rem;
+}
+.fw-file-select {
+  flex: 1;
+  min-width: 0;
+  padding: .35rem .5rem;
+  font-size: 1rem;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+.fw-upload-label { cursor: pointer; white-space: nowrap; }
+.fw-modal #fw-warning { white-space: pre-wrap; }
+.fw-meta {
+  font-size: 1rem;
+  color: var(--muted);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+.fw-modal .hint { font-size: .8rem; color: var(--muted); margin-top: .2rem; }
+
+/* Operator instruction — the run is blocked until they do this (unplug/replug). */
+.fw-prompt {
+  margin-bottom: .6rem;
+  padding: .7rem .9rem;
+  border-radius: var(--radius);
+  background: #4a3200;
+  border: 1px solid #ffb300;
+  color: #ffe2a3;
+  font-size: 1.1rem;
+  font-weight: 600;
+  white-space: pre-wrap;
+  animation: fw-prompt-pulse 1.6s ease-in-out infinite;
+}
+body.light .fw-prompt { background: #fff6e0; border-color: #e67e22; color: #7a4a00; }
+@keyframes fw-prompt-pulse {
+  0%, 100% { border-color: #ffb300; }
+  50%      { border-color: #ff7043; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fw-prompt { animation: none; }
+}
+
+/* step list — one line per stage of the flash */
+.fw-steps {
+  list-style: none;
+  margin: 0 0 .5rem;
+  padding: 0;
+  font-size: 1rem;
+}
+.fw-steps li {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+  padding: .1rem 0;
+  color: var(--muted);
+}
+.fw-steps li .fw-mark { width: 1.1em; text-align: center; flex: none; }
+.fw-steps li .fw-detail { font-size: .85rem; opacity: .8; }
+.fw-steps li.active { color: var(--text); font-weight: 600; }
+.fw-steps li.ok     { color: #4caf50; }
+.fw-steps li.fail   { color: #e05252; }
+.fw-steps li.skip   { color: #ffb300; }
+body.light .fw-steps li.ok { color: #2e8b38; }
+body.light .fw-steps li.fail { color: #c0392b; }
+body.light .fw-steps li.skip { color: #e67e22; }
+
+.fw-progress {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .5rem;
+}
+.fw-progress-track {
+  flex: 1;
+  height: 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.fw-progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width .2s linear;
+}
+.fw-progress-pct {
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: .9rem;
+  min-width: 3.5em;
+  text-align: right;
+}
+
+.fw-log {
+  height: 150px;
+  overflow-y: auto;
+  padding: .5rem .6rem;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: .82rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
+/* The modal scrolls, so pin the actions where they can always be clicked. */
+.fw-modal .btn-row {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  padding: .5rem 0;
+}
+
+.fw-verdict {
+  margin-top: .75rem;
+  padding: .6rem .8rem;
+  border-radius: var(--radius);
+  font-size: 1.05rem;
+  white-space: pre-wrap;
+}
+.fw-verdict.ok   { background: #14421c; border: 1px solid #2e8b38; color: #cdf3d2; }
+.fw-verdict.fail { background: #6b1a1a; border: 1px solid #9e2020; color: #ffcccc; }
+/* Cancelled is neither — nothing was written, so don't paint it as a failure. */
+.fw-verdict.cancel { background: #4a3200; border: 1px solid #ffb300; color: #ffe2a3; }
+body.light .fw-verdict.ok     { background: #e8f7ea; border-color: #2e8b38; color: #1c5e26; }
+body.light .fw-verdict.fail   { background: #ffeaea; border-color: #d63050; color: #8a1a1a; }
+body.light .fw-verdict.cancel { background: #fff6e0; border-color: #e67e22; color: #7a4a00; }
 
 /* ── scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar       { width: 6px; }
