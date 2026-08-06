@@ -190,24 +190,15 @@ def _diagnose(detail: str, step: str) -> tuple[str, str]:
     if 'invalid_hmac' in low or 'auth' in low:
         return ('The sensor rejected the command — wrong or missing password.',
                 'Check the Password field for this sensor and try again.')
+    # Step-specific advice comes before the generic pattern matching below:
+    # every failure at these steps is a timeout of some kind, so the generic
+    # "check the cable" answer would always win and it would be the wrong one.
     if step == 'upload' and ('timeout' in low or 'timed-out' in low or 'no response' in low):
         return ('The sensor did not answer the TFTP upload.',
                 'It is probably not in bootloader mode, or the bootloader window '
                 'closed before the upload started. Reset the sensor, confirm the '
                 'device list shows mode "boot", and run the update again. Check '
                 'the LAN cable and PoE power.')
-    if 'timeout' in low or 'timed-out' in low or 'no response' in low:
-        return ('The sensor did not respond to the command.',
-                'Check that the sensor IP is correct and reachable from this host '
-                '(same subnet), and that the password is right.')
-    if 'not found' in low or 'no such file' in low or 'permission' in low or 'access' in low:
-        return ('The firmware file could not be read.',
-                'Move the .sfb file into the Firmwares folder (or re-upload it) '
-                'and select it again.')
-    if 'refused' in low or 'unreachable' in low:
-        return ('The sensor could not be reached over the network.',
-                'Check the sensor IP is on the same subnet as this host, and that '
-                'the LAN cable / PoE power is connected.')
     if step == 'restart':
         return ('The sensor never started an application after the upload.',
                 'The firmware itself may have transferred fine — the sensor is just '
@@ -220,6 +211,18 @@ def _diagnose(detail: str, step: str) -> tuple[str, str]:
                 'The bootloader may have rejected the image (wrong signature or '
                 'a bootloader-included build). Check the .sfb is an "Updates no '
                 'bootloader" build for this hardware, then flash again.')
+    if 'timeout' in low or 'timed-out' in low or 'no response' in low:
+        return ('The sensor did not respond to the command.',
+                'Check that the sensor IP is correct and reachable from this host '
+                '(same subnet), and that the password is right.')
+    if 'not found' in low or 'no such file' in low or 'permission' in low or 'access' in low:
+        return ('The firmware file could not be read.',
+                'Move the .sfb file into the Firmwares folder (or re-upload it) '
+                'and select it again.')
+    if 'refused' in low or 'unreachable' in low:
+        return ('The sensor could not be reached over the network.',
+                'Check the sensor IP is on the same subnet as this host, and that '
+                'the LAN cable / PoE power is connected.')
     return ('The firmware update failed.',
             'See the log below, then reset the sensor and try again.')
 
@@ -694,7 +697,7 @@ class FwUpdateJob:
             raise TimeoutError(
                 f'the sensor did not report a running application within '
                 f'{int(APP_WAIT_S)}s'
-                + (f' — it stayed in its bootloader (firmware 0x0)' if said_boot
+                + (' — it stayed in its bootloader (firmware 0x0)' if boot_since
                    else f' ({last_err})'))
         self._say('✔ sensor is back in application mode')
         self._set_step('restart', 'ok')
