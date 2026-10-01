@@ -12,3 +12,8 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Packet captures and PktMon output from bench diagnostics
+*.etl
+backend/tools/a2e_stream_capture.txt
+backend/tools/pktmon_*.txt
