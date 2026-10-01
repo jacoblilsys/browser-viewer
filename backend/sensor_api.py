@@ -360,6 +360,17 @@ async def set_network_config(target_ip: str, mac: str, password: str, **kwargs):
     _check(await _send_recv(target_ip, set_req.SerializeToString(), mac, password))
 
 
+async def set_app_password(target_ip: str, mac: str, password: str, new_password: str):
+    """Change the application HMAC password. Signed with the current one; the
+    sensor saves the new key to EEPROM before answering, and every later request
+    must use the new password."""
+    if not new_password or len(new_password.encode('utf-8')) > 63:
+        raise ValueError('new password must be 1-63 bytes')
+    req = _pb.Request(msg_version=1)
+    req.new_app_password = new_password
+    _check(await _send_recv(target_ip, req.SerializeToString(), mac, password))
+
+
 async def stream_start(target_ip: str, mac: str, password: str):
     req = _pb.Request(msg_version=1)
     req.command.stream_data = _pb.FEATURE_ENABLED

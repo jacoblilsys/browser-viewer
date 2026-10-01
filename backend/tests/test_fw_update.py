@@ -147,11 +147,23 @@ class _FakeApi:
 
     SensorAuthError = sensor_api.SensorAuthError
 
-    def __init__(self, before, after=None):
+    def __init__(self, before, after=None, saved=None, saved_after=None):
         self.before = list(before)
         self.after = list(after if after is not None else before[-1:])
         self.uploaded = False
         self.calls = []
+        # Saved stream defaults as get_network_config reports them, before and
+        # after the upload (a firmware up to 0x103C saved a runtime FFT stop).
+        self.saved = dict(saved or {'data_stream': 'FEATURE_ENABLED',
+                                    'fft_stream': 'FEATURE_DISABLED'})
+        self.saved_after = dict(saved_after or self.saved)
+
+    async def get_network_config(self, ip, mac, password):
+        self.calls.append(('get_network_config', ip))
+        return dict(self.saved_after if self.uploaded else self.saved)
+
+    async def set_network_config(self, ip, mac, password, **kw):
+        self.calls.append(('set_network_config', kw))
 
     async def get_sensor_info(self, ip, mac, password):
         seq = self.after if self.uploaded else self.before
@@ -170,6 +182,8 @@ class _FakeApi:
     async def stream_stop(self, ip, mac, password):  await self._noop(ip, mac, password, 'stream_stop')
     async def stream_fft_stop(self, ip, mac, password):
         await self._noop(ip, mac, password, 'stream_fft_stop')
+    async def stream_fft_start(self, ip, mac, password):
+        await self._noop(ip, mac, password, 'stream_fft_start')
 
 
 class _FakeMdns:
@@ -254,11 +268,15 @@ def test_job_happy_path():
         assert st['progress'] == 100 and st['bytes_sent'] == st['bytes_total']
         assert [s['state'] for s in st['steps']] == ['ok'] * 6, \
             [(s['id'], s['state']) for s in st['steps']]
-        # Streams were stopped for the flash, so they must be started again, and
-        # the viewer's pause must be lifted however the job ended.
+        # Streams were stopped for the flash. The restart has already applied the
+        # saved power-on defaults, so nothing may be forced on afterwards (from
+        # 0x103D a runtime start overrides a disabled default), and with the
+        # defaults intact nothing is re-saved either. The viewer's pause must be
+        # lifted however the job ended.
         names = [c[0] for c in api.calls]
         assert 'stream_stop' in names and 'stream_fft_stop' in names
-        assert 'stream_start' in names, 'the sensor stream was never restarted'
+        assert 'stream_start' not in names and 'stream_fft_start' not in names, names
+        assert 'set_network_config' not in names, names
         assert bc.paused == 0, 'broadcaster left paused'
         assert mdns.fast == 0, 'fast mDNS discovery left running'
         assert fw_update.is_active() is False
@@ -266,6 +284,58 @@ def test_job_happy_path():
         _restore_waits(saved)
         shutil.rmtree(tmp, ignore_errors=True)
     print('  ok  happy path: reboot → upload → restart → verify, state restored')
+
+
+def test_job_restores_fft_default_saved_off_by_old_firmware():
+    """Up to 0x103C the runtime FFT stop was saved; after the update the
+    sensor would boot with FFT off for good unless the default is put back."""
+    saved = _fast_waits()
+    api = _FakeApi(before=[0x1032, None], after=[0x1033],
+                   saved={'data_stream': 'FEATURE_ENABLED', 'fft_stream': 'FEATURE_ENABLED'},
+                   saved_after={'data_stream': 'FEATURE_ENABLED', 'fft_stream': 'FEATURE_DISABLED'})
+    job, tmp = _make_job(api)
+    try:
+        asyncio.run(job.run())
+        assert job.status()['ok'] is True, job.status()['error']
+        sets = [c[1] for c in api.calls if c[0] == 'set_network_config']
+        assert sets == [{'fft_stream': 'FEATURE_ENABLED'}], sets
+        assert 'stream_start' not in [c[0] for c in api.calls]
+    finally:
+        _restore_waits(saved)
+        shutil.rmtree(tmp, ignore_errors=True)
+    print('  ok  a saved FFT default clobbered by the old firmware is restored')
+
+
+def test_job_never_writes_config_to_the_bootloader():
+    """A refused upload leaves the sensor in its bootloader; the stream restore
+    must not send it set_network_config (that rewrites the legacy EEPROM copy)."""
+    saved = _fast_waits()
+    api = _FakeApi(before=[0x1032, None], after=[None],
+                   saved={'data_stream': 'FEATURE_ENABLED', 'fft_stream': 'FEATURE_DISABLED'},
+                   saved_after={'data_stream': 'FEATURE_DISABLED', 'fft_stream': 'FEATURE_ENABLED'})
+    job, tmp = _make_job(api)
+    try:
+        asyncio.run(job.run())
+        assert job.status()['ok'] is False
+        names = [c[0] for c in api.calls]
+        assert 'set_network_config' not in names, names
+        assert 'stream_start' not in names and 'stream_fft_start' not in names, names
+    finally:
+        _restore_waits(saved)
+        shutil.rmtree(tmp, ignore_errors=True)
+    print('  ok  no config is written to a sensor left in its bootloader')
+
+
+def test_diagnose_bootloader_rejection():
+    d = ('TftpException: Received ERR packet from peer: ERR packet: errorcode = 2'
+         '\n    msg = SBSFU: firmware version rejected (anti')
+    cause, fix = fw_update._diagnose(d, 'upload')
+    assert 'not newer' in cause and 'SWD' in fix, cause
+    cause, _ = fw_update._diagnose('...msg = SBSFU: header authentication failed', 'upload')
+    assert 'signature' in cause, cause
+    cause, _ = fw_update._diagnose("[Errno 2] No such file or directory: 'x.sfb'", 'prepare')
+    assert 'could not be read' in cause, cause
+    print('  ok  bootloader TFTP rejections are explained, not blamed on the file')
 
 
 def test_job_restart_timeout_reports_bootloader():

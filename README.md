@@ -358,8 +358,11 @@ Generates a 3D surface plot and a 2D spectrogram heatmap (saved as PNG). Options
 | POST   | `/api/logging/start`   | Start logging to file               |
 | POST   | `/api/logging/stop`    | Stop logging                        |
 | GET/POST | `/api/logging/format` | Get/set log format (tsv/hdf5)      |
+| POST   | `/api/stream/raw/start` | Tell a sensor to start raw data now |
+| POST   | `/api/stream/raw/stop`  | Tell a sensor to stop raw data now  |
 | POST   | `/api/stats/reset`     | Reset packet/frame/FFT counters     |
 | POST   | `/api/sensor/info`     | Query sensor info                   |
+| POST   | `/api/sensor/password` | Change the sensor application password (`new_password`, 1–63 bytes) |
 | POST   | `/api/sensor/config`   | Get sensor config                   |
 | POST   | `/api/sensor/config/set` | Set sensor config                 |
 | POST   | `/api/network/config`  | Get network config                  |

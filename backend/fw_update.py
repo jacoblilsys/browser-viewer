@@ -187,6 +187,29 @@ def save_upload(name: str, data: bytes) -> dict:
 def _diagnose(detail: str, step: str) -> tuple[str, str]:
     """Turn a raw exception string into (cause, fix) for the operator."""
     low = (detail or '').lower()
+    # The bootloader (0x18+) answers a rejected image with a TFTP ERROR whose
+    # text starts "SBSFU:" and names the reason.
+    if 'err packet' in low or 'sbsfu' in low:
+        reason = detail.split('msg =', 1)[-1].strip() if 'msg =' in detail else detail
+        if 'version rejected' in low or 'anti' in low:
+            return ('The sensor refused this firmware: it is not newer than the '
+                    'version already installed (anti-rollback protection).',
+                    'Only a higher version can be installed over TFTP. The sensor '
+                    'keeps its current firmware and starts it again by itself '
+                    'within about a minute. To '
+                    'go back to an older version, flash it over SWD.')
+        if 'authentication' in low or 'crypto' in low:
+            return ('The sensor refused this firmware: its signature did not verify.',
+                    'The .sfb was not signed for this sensor, or is damaged. Use an '
+                    '"Updates no bootloader" .sfb built for this hardware.')
+        if 'too large' in low:
+            return ('The sensor refused this firmware: the image is too large for '
+                    'its download slot.',
+                    'This is probably a combined SBSFU image or one for different '
+                    'hardware. Use an "Updates no bootloader" .sfb.')
+        return (f'The sensor\'s bootloader refused the upload: {reason}',
+                'The sensor keeps its current firmware. Check the file, then reset '
+                'the sensor and try again.')
     if 'invalid_hmac' in low or 'auth' in low:
         return ('The sensor rejected the command — wrong or missing password.',
                 'Check the Password field for this sensor and try again.')
@@ -264,6 +287,8 @@ class FwUpdateJob:
         self.finished_at: Optional[float] = None
         self._t0         = time.monotonic()
         self._stopped_stream = False
+        self._saved_streams: Optional[dict] = None   # data_stream/fft_stream before we touched them
+        self._restarted = False                       # the sensor went through its bootloader
         self._cancel_requested = False
 
     # ── state / logging ──────────────────────────────────────────────────────
@@ -518,8 +543,7 @@ class FwUpdateJob:
             self.current_version = info.get('firmware_version') or None
             running_app = self.current_version is not None
             if running_app:
-                self._say(f'current firmware 0x{self.current_version:X} '
-                          f'({self.current_version})')
+                self._say(f'current firmware 0x{self.current_version:X}')
             else:
                 self._say('the sensor answered with firmware 0x0 — it is in its '
                           'bootloader, not running an application')
@@ -535,6 +559,14 @@ class FwUpdateJob:
         # an application that answered a moment ago — otherwise each command just
         # burns its 10 s timeout while the bootloader window ticks away.
         if running_app:
+            # The saved power-on stream defaults, so they can be put back: up to
+            # 0x103C a runtime FFT stop was also *saved*, which would otherwise
+            # leave the FFT off for good after the update.
+            try:
+                nc = await api.get_network_config(self.ip, self.mac, self.password)
+                self._saved_streams = {k: nc.get(k) for k in ('data_stream', 'fft_stream')}
+            except Exception:
+                self._saved_streams = None
             self._say('stopping streams (sensor + viewer)')
             for name, call in (('FFT', api.stream_fft_stop), ('raw', api.stream_stop)):
                 try:
@@ -628,6 +660,7 @@ class FwUpdateJob:
         if boot_mode == 'boot' and boot_ip and boot_ip != self.ip:
             self._say(f'bootloader announces {boot_ip} — uploading there')
             self.ip = boot_ip
+        self._restarted = True     # in the bootloader: it starts afresh whatever happens
         self._set_step('upload', 'active')
         self._say(f'⬆ pushing {self.file.name} to {self.ip}:{self.port}')
         self.sent = 0
@@ -705,7 +738,7 @@ class FwUpdateJob:
         # ── 6. verify ────────────────────────────────────────────────────────
         self._set_step('verify', 'active')
         self.new_version = version
-        self._say(f'sensor now reports firmware 0x{self.new_version:X} ({self.new_version})')
+        self._say(f'sensor now reports firmware 0x{self.new_version:X}')
         if self.expected is not None and self.new_version != self.expected:
             self.ok = False
             self.phase = 'failed'
@@ -720,6 +753,44 @@ class FwUpdateJob:
         self._set_step('verify', 'ok', f'0x{self.new_version:X}')
         self._say('✔ firmware update complete')
 
+    async def _restore_streams(self):
+        """Leave the streams as the saved power-on defaults say.
+
+        After a restart the sensor has already applied them by itself; all that
+        can be wrong is a default that an older firmware's runtime stop saved.
+        Without a restart (job cancelled or failed before the bootloader), the
+        runtime stops we sent are still in force, so start what the defaults say.
+        """
+        saved = self._saved_streams
+        if not saved:
+            if not self._restarted:
+                await self.api.stream_start(self.ip, self.mac, self.password)
+                self._say('restarted the sensor data stream')
+            return
+        if self._restarted:
+            # Only ever talk to the application here. After a failed or refused
+            # upload the bootloader may still be answering, and a
+            # set_network_config sent to it rewrites the legacy EEPROM copy that
+            # the application then adopts. It boots with its saved defaults anyway.
+            info = await self.api.get_sensor_info(self.ip, self.mac, self.password)
+            if not info.get('firmware_version'):
+                self._say('sensor is still in its bootloader — it will start with its '
+                          'saved stream settings')
+                return
+            now = await self.api.get_network_config(self.ip, self.mac, self.password)
+            fix = {k: v for k, v in saved.items() if v and now.get(k) != v}
+            if fix:
+                await self.api.set_network_config(self.ip, self.mac, self.password, **fix)
+                self._say('restored the saved stream defaults: '
+                          + ', '.join(f'{k}={v.split("_")[-1].lower()}' for k, v in fix.items()))
+            return
+        if saved.get('data_stream') == 'FEATURE_ENABLED':
+            await self.api.stream_start(self.ip, self.mac, self.password)
+            self._say('restarted the sensor data stream')
+        if saved.get('fft_stream') == 'FEATURE_ENABLED':
+            await self.api.stream_fft_start(self.ip, self.mac, self.password)
+            self._say('restarted the sensor FFT stream')
+
     async def _restore(self):
         """Put the sensor and the viewer back the way we found them. Best effort:
         the flash verdict is already decided, this must never raise."""
@@ -729,11 +800,10 @@ class FwUpdateJob:
             pass
         if self._stopped_stream:
             try:
-                await self.api.stream_start(self.ip, self.mac, self.password)
-                self._say('restarted the sensor data stream')
+                await self._restore_streams()
             except Exception as e:
-                self._say(f'⚠ could not restart the sensor data stream ({e}) — '
-                          'use Stream ▶ once the sensor is back')
+                self._say(f'⚠ could not restore the sensor streams ({e}) — '
+                          'check Network Config → Data/FFT Stream once the sensor is back')
         try:
             self.broadcaster.resume()
         except Exception:

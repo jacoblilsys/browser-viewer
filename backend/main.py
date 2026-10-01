@@ -432,9 +432,12 @@ async def api_host(request: Request):
 
 @app.get('/api/status')
 async def api_status():
-    connected = _receiver.connected_clients > 0 if _receiver else False
     return {
-        'connected': connected,
+        # TCP has a socket to inspect; UDP is connectionless, so recent valid
+        # raw/FFT frames are the equivalent connected state. Keep this endpoint
+        # consistent with the WebSocket status path, which already uses
+        # _is_connected().
+        'connected': _is_connected(),
         'logging':   _logging_on,
         'streaming': not _broadcaster.paused,
         'time_sync': _time_synced,
@@ -704,6 +707,26 @@ async def api_stream_stop():
     return {'ok': True, 'streaming': False}
 
 
+@app.post('/api/stream/raw/start')
+async def api_raw_start(body: SensorTarget):
+    """Tell one sensor to emit raw frames now (independent of browser pause)."""
+    try:
+        await _sensor_api().stream_start(body.target_ip, body.mac, body.password)
+        return {'ok': True}
+    except Exception as e:
+        raise _http_from(e)
+
+
+@app.post('/api/stream/raw/stop')
+async def api_raw_stop(body: SensorTarget):
+    """Tell one sensor to stop raw frames now (persistent boot config is unchanged)."""
+    try:
+        await _sensor_api().stream_stop(body.target_ip, body.mac, body.password)
+        return {'ok': True}
+    except Exception as e:
+        raise _http_from(e)
+
+
 class BurstPayload(BaseModel):
     duration: float = 1.0
 
@@ -737,6 +760,30 @@ async def api_fft_stop(body: SensorTarget):
         return {'ok': True}
     except Exception as e:
         raise _http_from(e)
+
+
+class PasswordPayload(SensorTarget):
+    new_password: str
+
+
+@app.post('/api/sensor/password')
+async def api_set_password(body: PasswordPayload):
+    """Change the sensor's application password, then prove it took by reading
+    Get Info signed with the new one."""
+    api = _sensor_api()
+    try:
+        await api.set_app_password(body.target_ip, body.mac, body.password,
+                                   body.new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise _http_from(e)
+    try:
+        await api.get_sensor_info(body.target_ip, body.mac, body.new_password)
+        verified = True
+    except Exception:
+        verified = False
+    return {'ok': True, 'verified': verified}
 
 
 @app.post('/api/sensor/reset')

@@ -48,7 +48,10 @@ let _burstFFT = null; // { snapshots: [...], index: 0 } — set after burst capt
 let _capturing = false; // true while a burst capture is in progress (from backend status)
 
 // Time sync ring buffer
-const _timeSync = { t: [], diff_ms: [] };
+// Host receive time minus the sensor time of the frame's LAST sample, one
+// series per stream. (Frame timestamps mark the first sample, so measuring from
+// them would add the frame's own length — 614 ms for an FFT-2048 window at ODR/8.)
+const _timeSync = { t: [], raw: [], fft: [] };
 const MAX_TIMESYNC_PTS = 600; // ~10 minutes at 1 Hz status rate
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -841,9 +844,14 @@ function _createTimeSyncPlot(container) {
   const infoDiv = document.createElement('div');
   infoDiv.className = 'timesync-info';
   infoDiv.innerHTML = `
-    <div><span class="ts-label">Device (NTP):</span> <span class="ts-value" id="ts-device">—</span></div>
+    <div><span class="ts-label">Device (NTP):</span> <span class="ts-value" id="ts-device">—</span> <span class="ts-label" id="ts-kind"></span></div>
     <div><span class="ts-label">Host:</span> <span class="ts-value" id="ts-host">—</span></div>
     <div><span class="ts-label">Difference:</span> <span class="ts-value" id="ts-diff">—</span></div>
+    <div class="ts-legend" title="Each point is how long a frame took to reach this computer: host receive time minus the sensor (NTP) time of the frame's LAST sample. With the sensor clock synced it is the transport delay — a few ms for raw blocks; ~10–20 ms for FFT, which also includes the FFT computation. A slow upward/downward drift means the clocks are drifting apart; a step means the sensor re-synced its clock.">
+      <span><span class="ts-swatch" style="background:#ffb300"></span>Raw: <b id="ts-raw">—</b></span>
+      <span><span class="ts-swatch" style="background:#29b6f6"></span>FFT: <b id="ts-fft">—</b></span>
+      <span class="ts-note">delay = host receive − sensor time of the frame's last sample</span>
+    </div>
   `;
   container.appendChild(infoDiv);
 
@@ -863,16 +871,17 @@ function _createTimeSyncPlot(container) {
     plugins: [wheelZoomPlugin()],
     axes: [
       { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: { stroke: '#444', width: 0.5 }, label: 'Time' },
-      { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: { stroke: '#334', width: 0.5 }, label: 'ms' },
+      { stroke: _axisStroke(), ticks: { stroke: _tickStroke() }, grid: { stroke: '#334', width: 0.5 }, label: 'delay (ms)' },
     ],
     series: [
       {},
-      { stroke: '#ffb300', width: 2, paths: uPlot.paths.linear(), label: 'Host − Device' },
+      { stroke: '#ffb300', width: 2, paths: uPlot.paths.linear(), spanGaps: true, label: 'Raw: host − last sample' },
+      { stroke: '#29b6f6', width: 2, paths: uPlot.paths.linear(), spanGaps: true, label: 'FFT: host − window end' },
     ],
     scales: { x: { time: false }, y: { auto: true } },
   };
 
-  const plot = new uPlot(opts, [[], []], graphDiv);
+  const plot = new uPlot(opts, [[], [], []], graphDiv);
 
   return {
     _plot: plot,
@@ -886,7 +895,7 @@ function _createTimeSyncPlot(container) {
     },
     destroy() { plot.destroy(); infoDiv.remove(); graphDiv.remove(); },
     setData(data) { plot.setData(data); },
-    update(deviceNs, hostNs, diffMs) {
+    update(deviceNs, hostNs, diffMs, kind) {
       // Update text display
       const devDate = new Date(deviceNs / 1e6);
       const hostDate = new Date(hostNs / 1e6);
@@ -895,22 +904,40 @@ function _createTimeSyncPlot(container) {
       container.querySelector('#ts-host').textContent = fmt(hostDate);
       const sign = diffMs >= 0 ? '+' : '';
       container.querySelector('#ts-diff').textContent = `${sign}${diffMs.toFixed(2)} ms`;
+      container.querySelector('#ts-kind').textContent =
+        kind === 'fft' ? '(FFT window end)' : '(last raw sample)';
+      const el = container.querySelector(kind === 'fft' ? '#ts-fft' : '#ts-raw');
+      if (el) el.textContent = `${diffMs.toFixed(1)} ms`;
 
       // Update graph with ring buffer data
       if (_timeSync.t.length > 1) {
         // Normalize time axis to seconds since first point
         const t0 = _timeSync.t[0];
         const t = _timeSync.t.map(v => v - t0);
-        plot.setData([t, _timeSync.diff_ms]);
+        plot.setData([t, _timeSync.raw, _timeSync.fft]);
       }
     },
   };
 }
 
-function _updateTimeSyncWindows(deviceNs, hostNs, diffMs) {
+function _collectTimeSync(msg, kind) {
+  const devNs = msg.device_end_ns || msg.device_time_ns;
+  if (!devNs || !msg.t_end_ns) return;
+  const hostSec = msg.t_end_ns / 1e9;
+  const diffMs = (msg.t_end_ns - devNs) / 1e6;
+  _timeSync.t.push(hostSec);
+  _timeSync.raw.push(kind === 'raw' ? diffMs : null);
+  _timeSync.fft.push(kind === 'fft' ? diffMs : null);
+  while (_timeSync.t.length > MAX_TIMESYNC_PTS) {
+    _timeSync.t.shift(); _timeSync.raw.shift(); _timeSync.fft.shift();
+  }
+  _updateTimeSyncWindows(devNs, msg.t_end_ns, diffMs, kind);
+}
+
+function _updateTimeSyncWindows(deviceNs, hostNs, diffMs, kind) {
   for (const win of Object.values(_chartWindows)) {
     if (WINDOW_TYPES[win.type]?.group === 'timesync' && win.plot && win.plot.update) {
-      win.plot.update(deviceNs, hostNs, diffMs);
+      win.plot.update(deviceNs, hostNs, diffMs, kind);
     }
   }
 }
@@ -1162,19 +1189,7 @@ function handleFrame(msg) {
       : `${Math.round(_rateHz)} Hz`;
   }
 
-  // Collect time sync data
-  if (msg.device_time_ns && msg.t_end_ns) {
-    const hostSec = msg.t_end_ns / 1e9;
-    const devSec = msg.device_time_ns / 1e9;
-    const diffMs = (hostSec - devSec) * 1000;
-    _timeSync.t.push(hostSec);
-    _timeSync.diff_ms.push(diffMs);
-    while (_timeSync.t.length > MAX_TIMESYNC_PTS) {
-      _timeSync.t.shift();
-      _timeSync.diff_ms.shift();
-    }
-    _updateTimeSyncWindows(msg.device_time_ns, msg.t_end_ns, diffMs);
-  }
+  _collectTimeSync(msg, 'raw');
 
   // Raw samples mode (low ODR — all samples forwarded)
   if (msg.raw_samples) {
@@ -1336,19 +1351,8 @@ function handleFFT(msg) {
 
   if (!freq || !mags) return;
 
-  // Collect time sync data from FFT frames (works even without raw data stream)
-  if (msg.device_time_ns && msg.t_end_ns) {
-    const hostSec = msg.t_end_ns / 1e9;
-    const devSec = msg.device_time_ns / 1e9;
-    const diffMs = (hostSec - devSec) * 1000;
-    _timeSync.t.push(hostSec);
-    _timeSync.diff_ms.push(diffMs);
-    while (_timeSync.t.length > MAX_TIMESYNC_PTS) {
-      _timeSync.t.shift();
-      _timeSync.diff_ms.shift();
-    }
-    _updateTimeSyncWindows(msg.device_time_ns, msg.t_end_ns, diffMs);
-  }
+  // Time sync from FFT frames too (works even without the raw data stream)
+  _collectTimeSync(msg, 'fft');
 
   // Recompute frequency axis from actual sample rate if known
   const fftSize = msg.fft_size || (msg.fft_bins ? msg.fft_bins * 2 : 0);
@@ -1555,7 +1559,8 @@ btnClear.addEventListener('click', () => {
   _lastFFT = null;
   _burstFFT = null;
   _timeSync.t = [];
-  _timeSync.diff_ms = [];
+  _timeSync.raw = [];
+  _timeSync.fft = [];
   _showBurstScrubbers();
   _updateSpectrograms();
   for (const win of Object.values(_chartWindows)) {
@@ -1869,6 +1874,14 @@ function ensurePassword() {
   });
 }
 
+// Firmware/bootloader/hardware versions are shown in hex (0x1039, 0x18) — the
+// form the release notes and file names use. mDNS TXT announces them in
+// decimal, so this accepts a number or a numeric string.
+function fwHex(v) {
+  const n = typeof v === 'number' ? v : parseInt(String(v).trim(), 10);
+  return Number.isFinite(n) ? `0x${n.toString(16).toUpperCase()}` : String(v);
+}
+
 // Detect the sensor's HMAC rejection (wrong or missing password) in an API
 // result and show a clear pop-up. Returns true if it was an auth error.
 function checkAuthError(d) {
@@ -1890,6 +1903,16 @@ document.getElementById('btn-get-info').addEventListener('click', async () => {
   if (fmt.temp2 != null)     fmt.temp2 = `${fmt.temp2.toFixed(1)} °C`;
   if (fmt.temp_core != null) fmt.temp_core = `${fmt.temp_core.toFixed(1)} °C`;
   if (fmt.cpu_usage != null) fmt.cpu_usage = `${fmt.cpu_usage.toFixed(1)} %`;
+  for (const k of ['hardware_version', 'firmware_version', 'bootloader_version'])
+    if (fmt[k] != null) fmt[k] = fwHex(fmt[k]);
+  // From app 0x103B the app reports the installed bootloader, but only a 0x1A+
+  // bootloader passes its version on; older ones read 0. The bootloader's own
+  // mDNS fw_bl, heard during its wait window, is then the only true source.
+  if (d.firmware_version && d.bootloader_version === 0) {
+    const seen = selectedSensor && (_devicesByMac[selectedSensor.mac] || {}).bl_seen;
+    fmt.bootloader_version = 'unknown (< 0x1A)'
+      + (seen ? ` — bootloader announced ${fwHex(seen)} at its last boot` : '');
+  }
   outInfo.textContent = JSON.stringify(fmt, null, 2);
   // Persistent status readout in the Selected Sensor panel.
   const cpuEl = document.getElementById('info-cpu');
@@ -1902,7 +1925,7 @@ document.getElementById('btn-get-info').addEventListener('click', async () => {
   // what tells the backend, and it re-normalises older sensors from here on.
   const fwEl = document.getElementById('info-fw');
   if (fwEl) fwEl.textContent = (d.firmware_version != null)
-    ? `0x${d.firmware_version.toString(16)}` : '—';
+    ? fwHex(d.firmware_version) : '—';
   const scEl = document.getElementById('info-fft-scale');
   const scWrap = document.getElementById('info-fft-scale-wrap');
   if (scEl && scWrap) {
@@ -2089,6 +2112,41 @@ document.getElementById('btn-set-net').addEventListener('click', async () => {
   outInfo.textContent = JSON.stringify(d, null, 2);
 });
 
+// ── application password change ───────────────────────────────────────────────
+document.getElementById('btn-set-pw').addEventListener('click', () => {
+  const field = document.getElementById('cfg-new-pw');
+  const newPw = field.value;
+  if (!newPw) { field.focus(); return; }
+  if (new TextEncoder().encode(newPw).length > 63) {
+    showDialog({ title: 'Password too long', message: 'The sensor accepts at most 63 bytes.',
+                 actions: [{ label: 'OK', primary: true, onClick: () => field.focus() }] });
+    return;
+  }
+  const body = sensorBody({ new_password: newPw });
+  showDialog({
+    title: 'Change sensor password?',
+    message: `Set a new application password on ${body.mac}. Every later command `
+      + 'must use it — keep a note of it. The current password in the Password '
+      + 'field signs this request.',
+    actions: [
+      { label: 'Cancel' },
+      { label: 'Set Password', primary: true, onClick: async () => {
+        const d = await apiPost('/api/sensor/password', body);
+        if (checkAuthError(d)) return;
+        if (!d.ok) { outInfo.textContent = JSON.stringify(d, null, 2); return; }
+        // The old password no longer works; switch the field (and its saved copy).
+        inPw.value = newPw;
+        inPw.dispatchEvent(new Event('input'));
+        field.value = '';
+        outInfo.textContent = d.verified
+          ? `Password changed on ${body.mac} — confirmed with Get Info using the new password.`
+          : `Password change sent to ${body.mac}, but Get Info with the new password did not `
+            + 'answer. Try Get Info; if it is rejected, the old password may still be active.';
+      } },
+    ],
+  });
+});
+
 // Changing a transport only takes effect after a sensor reboot — remind the operator.
 function _transportRestartNotice() {
   showDialog({
@@ -2256,10 +2314,17 @@ document.getElementById('btn-reset').addEventListener('click', async () => {
 });
 
 // ── device discovery ─────────────────────────────────────────────────────────
-async function refreshDevices() {
+let _devicesSig = '';
+
+async function refreshDevices(force = false) {
   try {
     const r = await fetch('/api/devices');
     const devices = await r.json();
+    // Polled every 2 s so a boot -> app switch shows up promptly; only rebuild
+    // the list when something changed, so hovers and clicks are not disturbed.
+    const sig = JSON.stringify(devices);
+    if (sig === _devicesSig && !force) return;
+    _devicesSig = sig;
     renderDeviceList(devices);
     // Auto-select if only one sensor on the network
     if (devices.length === 1 && !selectedSensor) {
@@ -2276,7 +2341,11 @@ async function refreshDevices() {
 const _devicesByMac = {};
 
 function renderDeviceList(devices) {
-  for (const d of devices) _devicesByMac[d.mac] = d;
+  for (const d of devices) {
+    _devicesByMac[d.mac] = d;
+    // Running its application again: allow one auto fast-boot on its next reboot.
+    if ((d.mode || '').toLowerCase() === 'app') _bootedMacs.delete(d.mac);
+  }
   if (!devices.length) {
     deviceListEl.innerHTML = '<div class="device-empty">No sensors found</div>';
     return;
@@ -2289,7 +2358,8 @@ function renderDeviceList(devices) {
 
     const modeClass = (d.mode || '').toLowerCase();
     const modeBadge = modeClass ? `<span class="device-mode ${modeClass}">${modeClass}</span>` : '';
-    const fwLabel = d.fw_app ? `FW ${d.fw_app}` : (d.fw_bl ? `BL ${d.fw_bl}` : '');
+    const blLabel = d.bl_seen ? `BL ${fwHex(d.bl_seen)}` : '';
+    const fwLabel = d.fw_app ? `FW ${fwHex(d.fw_app)}${blLabel ? ' · ' + blLabel : ''}` : blLabel;
     el.innerHTML = `
       <div class="device-row1">
         <span class="dot ${modeClass === 'app' ? 'green' : modeClass === 'boot' ? 'orange' : ''}" title="${modeClass === 'app' ? 'Application mode — sensor is running' : modeClass === 'boot' ? 'Bootloader mode — sensor is waiting to start' : 'Unknown mode'}"></span>
@@ -2505,10 +2575,10 @@ setupOverlay.addEventListener('click', (e) => {
 document.getElementById('btn-refresh-devices').addEventListener('click', (e) => {
   e.preventDefault();
   e.stopPropagation();
-  refreshDevices();
+  refreshDevices(true);
 });
 
-_refreshTimer = setInterval(refreshDevices, 10000);
+_refreshTimer = setInterval(refreshDevices, 2000);
 
 // ── settings ─────────────────────────────────────────────────────────────────
 const _settings = {
@@ -2789,8 +2859,8 @@ function _fwSyncFile() {
   }
   fwStartBtn.disabled = _fwRunning;
   fwMeta.textContent = `${_fwBytes(f.size)}`
-    + (f.version_hex ? `  ·  firmware ${f.version_hex} (${f.version})` : '  ·  version not in the file name')
-    + (cur ? `  ·  sensor now 0x${cur.toString(16).toUpperCase()} (${cur})` : '');
+    + (f.version_hex ? `  ·  firmware ${f.version_hex}` : '  ·  version not in the file name')
+    + (cur ? `  ·  sensor now ${fwHex(cur)}` : '');
 
   const warn = [];
   if (cur && cur < FW_RESET_MIN_VERSION) {
@@ -2850,7 +2920,7 @@ function _fwRenderStatus(st) {
     fwVerdict.className = 'fw-verdict ' + (st.ok ? 'ok' : st.cancelled ? 'cancel' : 'fail');
     if (st.ok) {
       fwVerdict.textContent = `✔ Firmware updated — the sensor is running `
-        + `${st.new_version_hex || '?'} (${st.new_version}) after ${st.elapsed_s}s.`;
+        + `${st.new_version_hex || '?'} after ${st.elapsed_s}s.`;
     } else if (st.cancelled) {
       fwVerdict.textContent = `⏹ Update cancelled.\n\n${st.cause}\n\n${st.fix}`;
     } else {

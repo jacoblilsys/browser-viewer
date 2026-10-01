@@ -379,6 +379,24 @@ body.light .chart-window.focused {
   color: var(--text);
   font-weight: 600;
 }
+.timesync-info .ts-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .2rem 1rem;
+  align-items: center;
+  cursor: help;
+}
+.timesync-info .ts-swatch {
+  display: inline-block;
+  width: .8rem;
+  height: .25rem;
+  margin-right: .3rem;
+  vertical-align: middle;
+}
+.timesync-info .ts-note {
+  color: var(--muted);
+  font-size: .78rem;
+}
 .timesync-graph {
   flex: 1;
   min-height: 0;

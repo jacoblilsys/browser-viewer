@@ -230,6 +230,12 @@
           <button class="btn" id="btn-get-cfg" title="Read the current sensor configuration from the device">Get Config</button>
           <button class="btn btn-primary" id="btn-set-cfg" title="Write the selected configuration to the sensor. The sensor will restart its data stream with the new settings.">Apply</button>
         </div>
+        <label title="Change the sensor's application password (the one in the Password field above). The request is signed with the current password; afterwards every command needs the new one. 1–63 characters. The factory password is separate and is not changed here.">New Password
+          <input type="password" id="cfg-new-pw" maxlength="63" autocomplete="new-password" placeholder="new application password" />
+        </label>
+        <div class="btn-row">
+          <button class="btn" id="btn-set-pw" title="Set the new application password on the selected sensor and switch the Password field to it">Set Password</button>
+        </div>
       </div>
     </details>
 

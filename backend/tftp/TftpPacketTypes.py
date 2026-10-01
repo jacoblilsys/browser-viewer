@@ -393,7 +393,12 @@ class TftpPacketERR(TftpPacket):
 
     def __str__(self):
         s = 'ERR packet: errorcode = %d' % self.errorcode
-        s += '\n    msg = %s' % self.errmsgs.get(self.errorcode, '')
+        # Prefer the peer's own text (the sensor's bootloader says why it
+        # rejected the image); fall back to the RFC 1350 wording.
+        msg = self.errmsg or self.errmsgs.get(self.errorcode, b'')
+        if isinstance(msg, bytes):
+            msg = msg.rstrip(b'\x00').decode('utf-8', 'replace')
+        s += '\n    msg = %s' % msg
         return s
 
     def encode(self):

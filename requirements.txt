@@ -1,7 +1,9 @@
 fastapi>=0.111
 uvicorn[standard]>=0.29
 websockets>=12
-protobuf>=4.25,<5
+# protobuf 4.x's Windows upb extension crashes during import on Python 3.14.
+# 7.x supports Python 3.10–3.14 and remains compatible with our generated code.
+protobuf>=7.34,<8
 numpy>=1.24
 zeroconf>=0.131
 h5py>=3.10

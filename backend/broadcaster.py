@@ -18,6 +18,29 @@ from typing import Dict, Optional, Set
 from fastapi import WebSocket
 from protobuf_decoder import FrameData, FFTFrameData
 
+
+# Since firmware 0x1036 a frame's timestamp marks its FIRST sample (raw block
+# and FFT window alike), so "host receive - timestamp" includes the frame's own
+# length: 77 ms for a 256-sample block at ODR/8, 614 ms for an FFT-2048 window.
+# Time-sync displays compare against the LAST sample instead, which leaves
+# just the transport latency and makes raw and FFT frames comparable.
+def _frame_end_ns(frame) -> int:
+    if frame is None or not frame.timestamp_ns:
+        return 0
+    n = len(next(iter(frame.columns.values()), [])) if frame.columns else 0
+    if frame.sample_rate_hz <= 0 or n < 2:
+        return frame.timestamp_ns
+    return frame.timestamp_ns + int((n - 1) * 1e9 / frame.sample_rate_hz)
+
+
+def _fft_end_ns(fft) -> int:
+    if fft is None or not fft.timestamp_ns:
+        return 0
+    rate = fft.freq_hz[1] * fft.fft_size if len(fft.freq_hz) > 1 else 0.0
+    if rate <= 0:
+        return fft.timestamp_ns
+    return fft.timestamp_ns + int((fft.fft_size - 1) * 1e9 / rate)
+
 class Broadcaster:
     def __init__(self, fps: int = 60):
         self._clients: Set[WebSocket] = set()
@@ -237,6 +260,7 @@ class Broadcaster:
 
         t_end_ns       = frame.recv_time_ns  if frame else 0
         device_time_ns = frame.timestamp_ns   if frame else 0
+        device_end_ns  = _frame_end_ns(frame)
         rate_hz        = frame.sample_rate_hz if frame else 0.0
         stream_uid     = frame.stream_uid     if frame else 0
 
@@ -246,6 +270,7 @@ class Broadcaster:
                 'type':           'frame',
                 't_end_ns':       t_end_ns,
                 'device_time_ns': device_time_ns,
+                'device_end_ns':  device_end_ns,
                 'rate_hz':        rate_hz,
                 'stream_uid':     stream_uid,
                 'raw_samples':    snapshot,
@@ -266,6 +291,7 @@ class Broadcaster:
                 'type':           'frame',
                 't_end_ns':       t_end_ns,
                 'device_time_ns': device_time_ns,
+                'device_end_ns':  device_end_ns,
                 'rate_hz':        rate_hz,
                 'stream_uid':     stream_uid,
                 'axes':           axes_data,
@@ -298,6 +324,7 @@ class Broadcaster:
             'seq':            fft.seq,
             't_end_ns':       fft.recv_time_ns,
             'device_time_ns': fft.timestamp_ns,
+            'device_end_ns':  _fft_end_ns(fft),
         })
 
         await self._broadcast(msg)
