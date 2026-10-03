@@ -20,6 +20,12 @@
   </div>
 </header>
 
+<div class="update-banner" id="update-banner" hidden>
+  <span id="update-banner-text"></span>
+  <a id="update-banner-link" href="#" target="_blank" rel="noopener">Release notes &#8599;</a>
+  <button class="update-banner-close" id="update-banner-close" title="Hide until a newer version is released">&times;</button>
+</div>
+
 <main class="layout">
 
   <!-- ── Charts area ── -->
@@ -440,6 +446,10 @@
         <input type="checkbox" id="chk-auto-boot" />
         Auto fast-boot sensors in bootloader
       </label>
+    </div>
+    <div class="settings-group settings-version" title="This viewer's version, and the latest release on GitHub. The server checks GitHub at most every 6 hours (set UPDATE_CHECK=0 to turn the check off).">
+      <div>Viewer <b id="ver-current">—</b> &middot; <span id="ver-status">—</span></div>
+      <button class="btn" id="btn-check-update">Check for updates</button>
     </div>
     <div class="btn-row" style="margin-top:.75rem">
       <button class="btn" id="btn-settings-close">Close</button>

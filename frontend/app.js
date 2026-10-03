@@ -2622,6 +2622,59 @@ document.getElementById('btn-settings').addEventListener('click', () => {
   settingsOverlay.hidden = false;
 });
 
+// ── viewer update check (GitHub releases, via /api/version) ──────────────────
+const _updBanner = document.getElementById('update-banner');
+
+// Release links come from the network: only ever link to GitHub.
+function _safeReleaseUrl(u) {
+  return (typeof u === 'string' && u.startsWith('https://github.com/')) ? u : 'https://github.com/';
+}
+
+function _renderVersion(v) {
+  document.getElementById('ver-current').textContent = `v${v.current}`;
+  const st = document.getElementById('ver-status');
+  if (!v.enabled)      st.textContent = 'update check off';
+  else if (v.error)    st.textContent = 'could not reach GitHub';
+  else if (v.newer) {
+    const a = document.createElement('a');
+    a.href = _safeReleaseUrl(v.url); a.target = '_blank'; a.rel = 'noopener';
+    a.textContent = `v${v.latest} available ↗`;
+    st.replaceChildren(a);
+  }
+  else if (v.latest)   st.textContent = 'up to date';
+  else                 st.textContent = 'no release published yet';
+  // Banner only for a newer release the operator has not dismissed.
+  let dismissed = '';
+  try { dismissed = localStorage.getItem('updateDismissed') || ''; } catch (e) { /* private mode */ }
+  if (v.newer && v.latest !== dismissed) {
+    document.getElementById('update-banner-text').textContent =
+      `Viewer v${v.latest} is available (running v${v.current}).`;
+    document.getElementById('update-banner-link').href = _safeReleaseUrl(v.url);
+    _updBanner.dataset.version = v.latest;
+    _updBanner.hidden = false;
+  } else {
+    _updBanner.hidden = true;
+  }
+}
+
+async function checkForUpdate(refresh = false) {
+  try {
+    const r = await fetch('/api/version' + (refresh ? '?refresh=1' : ''));
+    if (r.ok) _renderVersion(await r.json());
+  } catch (e) { /* server restarting — try again next time */ }
+}
+
+document.getElementById('update-banner-close').addEventListener('click', () => {
+  try { localStorage.setItem('updateDismissed', _updBanner.dataset.version || ''); } catch (e) { /* ignore */ }
+  _updBanner.hidden = true;
+});
+document.getElementById('btn-check-update').addEventListener('click', async () => {
+  document.getElementById('ver-status').textContent = 'checking…';
+  await checkForUpdate(true);
+});
+checkForUpdate();
+setInterval(checkForUpdate, 6 * 3600 * 1000);
+
 document.getElementById('btn-settings-close').addEventListener('click', () => {
   settingsOverlay.hidden = true;
 });

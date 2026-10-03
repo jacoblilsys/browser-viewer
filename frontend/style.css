@@ -37,6 +37,33 @@ body.light .dot.red   { background: #c0392b; }
 body.light .dot.orange{ background: #e67e22; }
 body.light .output-box { color: #2a6e2a; }
 
+/* ── update banner ─────────────────────────────────────────────────────────── */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+  padding: .3rem 1rem;
+  font-size: .85rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+.update-banner a { color: var(--accent); }
+.update-banner-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+.settings-version {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+}
+
 /* ── topbar ────────────────────────────────────────────────────────────────── */
 .topbar {
   display: flex;

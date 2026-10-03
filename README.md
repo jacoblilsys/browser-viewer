@@ -55,6 +55,8 @@ All settings are via environment variables. Defaults are sensible for typical us
 | `FIRMWARE_DIR` | *(auto)* | Folder(s) searched for `.sfb`/`.bin` firmware, `os.pathsep`-separated. Defaults to the production `Firmwares/` tree next to the viewer, then `browser_viewer/firmware/`. See [Firmware update](#firmware-update-tftp). |
 | `TFTP_PORT`  | `69`     | TFTP port on the sensor's bootloader                                     |
 | `TFTP_LOCAL_IP` | *(auto)* | Local IP to bind the TFTP client socket to. Only needed when the default route picks the wrong adapter. |
+| `UPDATE_CHECK` | `1` | `0` turns the [viewer update check](#releases--update-check) off — no request to GitHub at all. |
+| `UPDATE_REPO` | `jacoblilsys/browser-viewer` | GitHub repository whose latest release the update check compares against. |
 
 ### Examples
 
@@ -346,6 +348,29 @@ Generates a 3D surface plot and a 2D spectrogram heatmap (saved as PNG). Options
 | `--max-frames 500` | Limit frames for performance |
 | `--colormap plasma` | Any matplotlib colormap |
 
+## Releases & update check
+
+The viewer's version lives in `backend/version.py`. At startup, and then at most
+every 6 hours, the server asks GitHub for the latest release of `UPDATE_REPO`
+(drafts and pre-releases are ignored). If it is newer, a banner under the top bar
+says so, with a link to the release notes. Its × hides it until an even newer
+release appears. **Settings** shows the running version and has a
+**Check for updates** button. Nothing is downloaded or installed automatically.
+
+Offline sensor networks are expected. A failed check is silent (Settings shows
+"could not reach GitHub"), never delays startup, and is retried after 30 minutes.
+The check is one unauthenticated HTTPS request to `api.github.com`, which reveals
+this machine's public IP to GitHub. Set `UPDATE_CHECK=0` to turn it off.
+
+To publish a release:
+
+1. Bump `__version__` in `backend/version.py` and commit.
+2. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. Create the release: `gh release create vX.Y.Z --title "vX.Y.Z" --notes "…"`.
+
+The tag must be `v` plus the same number as `version.py`; tags that are not
+plain `vX.Y.Z` are ignored.
+
 ## REST API
 
 | Method | Endpoint                | Description                          |
@@ -362,6 +387,7 @@ Generates a 3D surface plot and a 2D spectrogram heatmap (saved as PNG). Options
 | POST   | `/api/stream/raw/stop`  | Tell a sensor to stop raw data now  |
 | POST   | `/api/stats/reset`     | Reset packet/frame/FFT counters     |
 | POST   | `/api/sensor/info`     | Query sensor info                   |
+| GET    | `/api/version`         | Viewer version and latest GitHub release (`?refresh=1` re-checks) |
 | POST   | `/api/sensor/password` | Change the sensor application password (`new_password`, 1–63 bytes) |
 | POST   | `/api/sensor/config`   | Get sensor config                   |
 | POST   | `/api/sensor/config/set` | Set sensor config                 |

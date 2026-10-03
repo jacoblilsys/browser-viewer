@@ -38,6 +38,8 @@ from broadcaster import Broadcaster
 from log_writer import LogManager
 from mdns_scanner import MDNSScanner
 import fw_update
+import update_check
+from version import __version__
 
 # ── configuration ─────────────────────────────────────────────────────────────
 
@@ -281,6 +283,10 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_drain_queue())
     asyncio.create_task(_status_heartbeat())
+    # One background update check, so the first page load already has an
+    # answer. check() swallows every failure (offline LANs are normal).
+    asyncio.create_task(update_check.check())
+    logging.getLogger('host').info('Viewer version %s', __version__)
 
     # Print the browser URL prominently
     _http_port = int(os.environ.get('PORT', os.environ.get('UVICORN_PORT', '8000')))
@@ -418,6 +424,12 @@ async def index():
 @app.get('/api/devices')
 async def api_devices():
     return _mdns.get_devices()
+
+
+@app.get('/api/version')
+async def api_version(refresh: int = 0):
+    """This viewer's version and whether GitHub has a newer release."""
+    return await update_check.check(refresh=bool(refresh))
 
 
 @app.get('/api/host')
